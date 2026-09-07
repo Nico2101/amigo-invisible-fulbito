@@ -40,11 +40,6 @@ type ResultRow = {
 const supabase = createClient()
 const pendingKey = 'amigo-invisible.pending-auth.v3'
 
-function productionUrl() {
-  const configured = process.env.NEXT_PUBLIC_SITE_URL?.trim().replace(/\/$/, '')
-  if (configured) return configured
-  return window.location.origin
-}
 
 function friendlyError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error || 'Ocurrió un error inesperado.')
@@ -70,7 +65,8 @@ export default function Home() {
   const [message, setMessage] = useState('')
   const [messageType, setMessageType] = useState<'info' | 'error' | 'success'>('info')
   const [busy, setBusy] = useState(false)
-  const [magicSent, setMagicSent] = useState(false)
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login')
+  const [password, setPassword] = useState('')
   const [progress, setProgress] = useState({ total: 0, completed: 0, status: 'open' as EventRow['status'] })
   const pendingInFlight = useRef(false)
 
@@ -204,67 +200,68 @@ export default function Home() {
     return () => window.clearTimeout(timer)
   }, [message])
 
-  async function sendMagicLink(kind: 'create' | 'join') {
-    const clean = email.trim().toLowerCase()
-    if (!clean) {
-      notify('Ingresá tu email para continuar.', 'error')
+  async function authenticate(kind: 'create' | 'join') {
+    const cleanEmail = email.trim().toLowerCase()
+    const cleanName = name.trim()
+    const cleanCode = code.trim().toUpperCase()
+
+    if (!cleanEmail || !password) {
+      notify('Ingresá email y contraseña para continuar.', 'error')
       return
     }
-
-    if (kind === 'create' && !name.trim()) {
+    if (password.length < 6) {
+      notify('La contraseña debe tener al menos 6 caracteres.', 'error')
+      return
+    }
+    if (kind === 'create' && !cleanName) {
       notify('Ingresá tu nombre antes de continuar.', 'error')
       return
     }
-
-    if (kind === 'join' && (!code.trim() || !name.trim())) {
-      notify('Completá código, nombre y email.', 'error')
+    if (kind === 'join' && (!cleanCode || !cleanName)) {
+      notify('Completá código, nombre, email y contraseña.', 'error')
       return
     }
 
     setBusy(true)
-    setMagicSent(false)
-    notify('Preparando tu acceso seguro…')
+    try {
+      const pending: PendingAction =
+        kind === 'create'
+          ? { kind, name: cleanName, eventName: eventName.trim(), eventDate, email: cleanEmail }
+          : { kind, code: cleanCode, name: cleanName, email: cleanEmail }
+      savePending(pending)
 
-    const pending: PendingAction =
-      kind === 'create'
-        ? {
-            kind,
-            name: name.trim(),
-            eventName: eventName.trim(),
-            eventDate,
-            email: clean,
-          }
-        : {
-            kind,
-            code: code.trim().toUpperCase(),
-            name: name.trim(),
-            email: clean,
-          }
-
-    savePending(pending)
-
-    const redirectTo = `${productionUrl()}/auth/callback?next=/`
-    const { error } = await supabase.auth.signInWithOtp({
-      email: clean,
-      options: {
-        emailRedirectTo: redirectTo,
-        shouldCreateUser: true,
-      },
-    })
-
-    setBusy(false)
-
-    if (error) {
-      localStorage.removeItem(pendingKey)
-      notify(friendlyError(error), 'error')
-      return
+      if (authMode === 'register') {
+        const { data, error } = await supabase.auth.signUp({
+          email: cleanEmail,
+          password,
+          options: { data: { display_name: cleanName } },
+        })
+        if (error) throw error
+        if (!data.session) {
+          throw new Error('La cuenta fue creada, pero Supabase está pidiendo confirmar el email. En Authentication → Providers → Email desactivá “Confirm email” para usar este login sin enviar correos.')
+        }
+        setUser(data.user)
+        await continuePending(data.user)
+      } else {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: cleanEmail,
+          password,
+        })
+        if (error) throw error
+        if (!data.user) throw new Error('No se pudo iniciar sesión.')
+        setUser(data.user)
+        await continuePending(data.user)
+      }
+    } catch (error) {
+      const message = friendlyError(error)
+      if (/invalid login credentials/i.test(message)) {
+        notify('Email o contraseña incorrectos.', 'error')
+      } else {
+        notify(message, 'error')
+      }
+    } finally {
+      setBusy(false)
     }
-
-    setMagicSent(true)
-    notify(
-      'Te mandamos el enlace. Abrilo en este mismo navegador para continuar automáticamente.',
-      'success',
-    )
   }
 
   async function createEvent(authUser = user, pending?: PendingAction & { kind: 'create' }) {
@@ -613,24 +610,31 @@ export default function Home() {
 
               {!user && (
                 <div className="auth-panel">
-                  <div className="auth-icon">✉</div>
+                  <div className="auth-icon">🔐</div>
                   <div>
-                    <h3>Primero aseguramos tu identidad</h3>
-                    <p>Te mandamos un enlace de acceso a tu email. No necesitás crear una contraseña.</p>
+                    <h3>{authMode === 'login' ? 'Entrá para crear tu evento' : 'Creá tu cuenta y arrancamos'}</h3>
+                    <p>{authMode === 'login' ? 'Email y contraseña. Sin códigos, sin enlaces y sin esperar correos.' : 'Elegí una contraseña de al menos 6 caracteres.'}</p>
                   </div>
                   <label>
                     Email
                     <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="vos@email.com" autoComplete="email" />
                   </label>
-                  <button className="button primary full" onClick={() => sendMagicLink('create')} disabled={busy}>
-                    {busy ? 'Enviando enlace…' : magicSent ? 'Enviar otro enlace' : 'Enviar enlace de acceso'}
-                  </button>
-                  {magicSent && (
-                    <div className="magic-tip">
-                      <strong>Revisá tu bandeja.</strong>
-                      <span>El enlace te devolverá a <b>{siteLabel}</b> y retomará este paso.</span>
-                    </div>
+                  {authMode === 'register' && (
+                    <label>
+                      Tu nombre
+                      <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nombre y apellido" autoComplete="name" />
+                    </label>
                   )}
+                  <label>
+                    Contraseña
+                    <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="Mínimo 6 caracteres" autoComplete={authMode === 'login' ? 'current-password' : 'new-password'} />
+                  </label>
+                  <button className="button primary full" onClick={() => authenticate('create')} disabled={busy}>
+                    {busy ? 'Ingresando…' : authMode === 'login' ? 'Iniciar sesión' : 'Crear cuenta'}
+                  </button>
+                  <button type="button" className="text-button" onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')} disabled={busy}>
+                    {authMode === 'login' ? '¿No tenés cuenta? Crear cuenta' : '¿Ya tenés cuenta? Iniciar sesión'}
+                  </button>
                 </div>
               )}
 
@@ -707,17 +711,22 @@ export default function Home() {
                   {busy ? 'Entrando…' : 'Unirme al evento →'}
                 </button>
               ) : (
-                <>
-                  <button className="button primary large full" onClick={() => sendMagicLink('join')} disabled={busy}>
-                    {busy ? 'Enviando enlace…' : magicSent ? 'Enviar otro enlace' : 'Enviar acceso por email'}
+                <div className="auth-panel compact">
+                  <div>
+                    <h3>{authMode === 'login' ? 'Iniciá sesión' : 'Creá tu cuenta'}</h3>
+                    <p>Sin emails de acceso. Solamente email y contraseña.</p>
+                  </div>
+                  <label>
+                    Contraseña
+                    <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="Mínimo 6 caracteres" autoComplete={authMode === 'login' ? 'current-password' : 'new-password'} />
+                  </label>
+                  <button className="button primary large full" onClick={() => authenticate('join')} disabled={busy}>
+                    {busy ? 'Ingresando…' : authMode === 'login' ? 'Iniciar sesión y unirme' : 'Crear cuenta y unirme'}
                   </button>
-                  {magicSent && (
-                    <div className="magic-tip">
-                      <strong>Listo.</strong>
-                      <span>Abrí el email en este navegador y volveremos al evento automáticamente.</span>
-                    </div>
-                  )}
-                </>
+                  <button type="button" className="text-button" onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')} disabled={busy}>
+                    {authMode === 'login' ? '¿No tenés cuenta? Crear cuenta' : '¿Ya tenés cuenta? Iniciar sesión'}
+                  </button>
+                </div>
               )}
             </div>
           </section>

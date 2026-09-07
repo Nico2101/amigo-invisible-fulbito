@@ -56,3 +56,7 @@ npm start
 Las asignaciones se entregan mediante una función segura. Cada participante puede consultar únicamente su propio resultado. El organizador puede consultar el progreso general del evento, pero no los cruces.
 
 La migración `supabase/migrations/20260906_secure_event_helpers.sql` contiene los RPC auxiliares utilizados por la interfaz.
+
+
+## Acceso
+La app usa email + contraseña con Supabase Auth. Para evitar correos de confirmación en un proyecto de uso privado, desactivá "Confirm email" en Authentication → Providers → Email.
