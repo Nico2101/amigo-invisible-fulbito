@@ -9,7 +9,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Falta user_id' }, { status: 400 })
     }
 
-    const events = store.getUserEvents(userId)
+    const events = await store.getUserEvents(userId)
     return NextResponse.json({ events })
   } catch (err) {
     console.error('[API /api/user/events] Error:', err)

@@ -9,14 +9,16 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Falta event_id' }, { status: 400 })
     }
 
-    const members = store.getMembers(eventId)
-    const progress = store.getProgress(eventId)
+    const members = await store.getMembers(eventId)
+    const progress = await store.getProgress(eventId)
 
     // Enriquecer con estado de preferencias
-    const enriched = members.map(m => ({
-      ...m,
-      has_preferences: store.getPreferences(eventId, m.user_id).length >= 3,
-    }))
+    const enriched = await Promise.all(
+      members.map(async m => ({
+        ...m,
+        has_preferences: (await store.getPreferences(eventId, m.user_id)).length >= 3,
+      }))
+    )
 
     return NextResponse.json({ members: enriched, progress })
   } catch (err) {

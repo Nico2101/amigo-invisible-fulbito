@@ -10,7 +10,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Ingresá tu nombre de usuario y contraseña.' }, { status: 400 })
     }
 
-    const user = store.registerUser(username, password, display_name)
+    const user = await store.registerUser(username, password, display_name)
 
     return NextResponse.json({
       user: {

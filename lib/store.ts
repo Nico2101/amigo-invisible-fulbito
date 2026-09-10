@@ -63,13 +63,19 @@ interface StoreData {
   assignmentsByEvent: Record<string, StoreAssignment[]>
 }
 
+// Bins de almacenamiento en la nube persistentes y compartidos entre todos los dispositivos y lambdas
+const PRIMARY_BIN = 'https://extendsclass.com/api/json-storage/bin/fcccbca'
+const BACKUP_BIN = 'https://extendsclass.com/api/json-storage/bin/aacfbac'
+
 const IS_VERCEL = Boolean(process.env.VERCEL)
 const SEED_FILE = path.join(process.cwd(), 'data', 'store.json')
 const DATA_DIR = IS_VERCEL ? path.join(os.tmpdir(), 'amigo-data') : path.join(process.cwd(), 'data')
 const DATA_FILE = path.join(DATA_DIR, 'store.json')
 
-// Cache en memoria por si el sistema de archivos es estrictamente de sólo lectura
+// Cache en memoria con tiempo de vida para acelerar lecturas concurrentes
 let memoryCache: StoreData | null = null
+let lastFetchTime = 0
+const CACHE_TTL_MS = 2000 // 2 segundos
 
 function getInitialData(): StoreData {
   return {
@@ -82,120 +88,195 @@ function getInitialData(): StoreData {
   }
 }
 
-// Asegurar que la carpeta y el archivo existan siempre
-function ensureFile(): void {
+// Asegurar que la carpeta local exista para backup en disco
+function ensureLocalDir(): void {
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true })
     }
-    if (!fs.existsSync(DATA_FILE)) {
-      // Si hay archivo inicial en el bundle, copiarlo
-      if (fs.existsSync(SEED_FILE)) {
-        try {
-          const seedContent = fs.readFileSync(SEED_FILE, 'utf-8')
-          fs.writeFileSync(DATA_FILE, seedContent, 'utf-8')
-          return
-        } catch {
-          // Ignorar si falla lectura de seed
-        }
-      }
-      const initial = getInitialData()
-      fs.writeFileSync(DATA_FILE, JSON.stringify(initial, null, 2), 'utf-8')
-    }
   } catch (err) {
-    console.error('[Store] Error asegurando archivo de datos:', err)
+    console.warn('[Store] No se pudo crear directorio local:', err)
   }
 }
 
-function loadData(): StoreData {
-  if (memoryCache) {
+function saveToLocalDisk(data: StoreData): void {
+  try {
+    ensureLocalDir()
+    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), 'utf-8')
+  } catch (err) {
+    console.warn('[Store] Error guardando copia en disco local:', err)
+  }
+}
+
+function loadFromLocalDisk(): StoreData {
+  try {
+    if (fs.existsSync(DATA_FILE)) {
+      const raw = fs.readFileSync(DATA_FILE, 'utf-8')
+      if (raw) return JSON.parse(raw) as StoreData
+    }
+    if (fs.existsSync(SEED_FILE)) {
+      const raw = fs.readFileSync(SEED_FILE, 'utf-8')
+      if (raw) return JSON.parse(raw) as StoreData
+    }
+  } catch (err) {
+    console.warn('[Store] Error leyendo de disco local:', err)
+  }
+  return getInitialData()
+}
+
+// Carga centralizada: Consulta el store en la nube para sincronizar todos los dispositivos y lambdas
+async function loadData(forceRefresh = false): Promise<StoreData> {
+  const now = Date.now()
+  if (!forceRefresh && memoryCache && now - lastFetchTime < CACHE_TTL_MS) {
     return memoryCache
   }
-  ensureFile()
+
+  // 1. Intentar descargar del bin principal en la nube
   try {
-    let raw = ''
-    if (fs.existsSync(DATA_FILE)) {
-      raw = fs.readFileSync(DATA_FILE, 'utf-8')
-    } else if (fs.existsSync(SEED_FILE)) {
-      raw = fs.readFileSync(SEED_FILE, 'utf-8')
-    }
-    if (raw) {
-      const parsed = JSON.parse(raw) as Partial<StoreData>
-      memoryCache = {
-        users: parsed.users || {},
-        events: parsed.events || {},
-        eventsByCode: parsed.eventsByCode || {},
-        membersByEvent: parsed.membersByEvent || {},
-        prefsByEvent: parsed.prefsByEvent || {},
-        assignmentsByEvent: parsed.assignmentsByEvent || {},
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 3500)
+    const res = await fetch(`${PRIMARY_BIN}?_ts=${now}`, {
+      headers: { 'Cache-Control': 'no-cache, no-store' },
+      signal: controller.signal,
+    })
+    clearTimeout(timer)
+
+    if (res.ok) {
+      const parsed = await res.json()
+      if (parsed && typeof parsed === 'object') {
+        const cloudData: StoreData = {
+          users: parsed.users || {},
+          events: parsed.events || {},
+          eventsByCode: parsed.eventsByCode || {},
+          membersByEvent: parsed.membersByEvent || {},
+          prefsByEvent: parsed.prefsByEvent || {},
+          assignmentsByEvent: parsed.assignmentsByEvent || {},
+        }
+        memoryCache = cloudData
+        lastFetchTime = now
+        saveToLocalDisk(cloudData)
+        return cloudData
       }
-      return memoryCache
     }
   } catch (err) {
-    console.error('[Store] Error leyendo archivo de datos:', err)
+    console.warn('[Store:Cloud] Bin principal no disponible, intentando backup...', err)
   }
-  memoryCache = getInitialData()
-  return memoryCache
+
+  // 2. Intentar descargar del bin de respaldo
+  try {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 3000)
+    const res = await fetch(`${BACKUP_BIN}?_ts=${now}`, {
+      headers: { 'Cache-Control': 'no-cache, no-store' },
+      signal: controller.signal,
+    })
+    clearTimeout(timer)
+
+    if (res.ok) {
+      const parsed = await res.json()
+      if (parsed && typeof parsed === 'object') {
+        const cloudData: StoreData = {
+          users: parsed.users || {},
+          events: parsed.events || {},
+          eventsByCode: parsed.eventsByCode || {},
+          membersByEvent: parsed.membersByEvent || {},
+          prefsByEvent: parsed.prefsByEvent || {},
+          assignmentsByEvent: parsed.assignmentsByEvent || {},
+        }
+        memoryCache = cloudData
+        lastFetchTime = now
+        saveToLocalDisk(cloudData)
+        return cloudData
+      }
+    }
+  } catch {
+    // Falla de red en ambos bins
+  }
+
+  // 3. Si no hay conexión o falla la nube, usar caché en memoria o disco
+  if (memoryCache) return memoryCache
+  const diskData = loadFromLocalDisk()
+  memoryCache = diskData
+  return diskData
 }
 
-function saveData(data: StoreData): void {
+// Guardado centralizado: Escribe a la nube y actualiza caché local
+async function saveData(data: StoreData): Promise<void> {
   memoryCache = data
-  ensureFile()
+  lastFetchTime = Date.now()
+  saveToLocalDisk(data)
+
+  const payload = JSON.stringify(data)
+
+  // Subir a la nube principal
   try {
-    const tempFile = `${DATA_FILE}.tmp`
-    fs.writeFileSync(tempFile, JSON.stringify(data, null, 2), 'utf-8')
-    fs.renameSync(tempFile, DATA_FILE)
-  } catch {
-    try {
-      fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), 'utf-8')
-    } catch (writeErr) {
-      console.warn('[Store] Sistema de archivos no escribible (usando memoria):', writeErr)
+    const res = await fetch(PRIMARY_BIN, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+    })
+    if (!res.ok) {
+      console.warn('[Store:Cloud] PUT al bin principal falló:', res.status)
+      // Backup bin
+      await fetch(BACKUP_BIN, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+      })
     }
+  } catch (err) {
+    console.error('[Store:Cloud] Error sincronizando a la nube:', err)
+    try {
+      await fetch(BACKUP_BIN, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+      })
+    } catch {}
   }
 }
 
 // ---- Funciones públicas ----
 
-export function createEvent(ev: StoreEvent): StoreEvent {
-  const data = loadData()
+export async function createEvent(ev: StoreEvent): Promise<StoreEvent> {
+  const data = await loadData(true)
   const cleanCode = ev.code.trim().toUpperCase()
   data.events[ev.id] = ev
   data.eventsByCode[cleanCode] = ev.id
-  saveData(data)
-  console.log(`[Store:File] ✅ Evento guardado en disco: "${ev.name}" (código: ${cleanCode}, id: ${ev.id})`)
+  await saveData(data)
+  console.log(`[Store] ✅ Evento creado: "${ev.name}" (código: ${cleanCode}, id: ${ev.id})`)
   return ev
 }
 
-export function getEventByCode(code: string): StoreEvent | null {
-  const data = loadData()
+export async function getEventByCode(code: string): Promise<StoreEvent | null> {
+  const data = await loadData(true)
   const cleanCode = (code || '').trim().toUpperCase().replace(/\s+/g, '')
   const id = data.eventsByCode[cleanCode]
-  console.log(`[Store:File] Buscando código "${cleanCode}". Códigos disponibles en disco:`, Object.keys(data.eventsByCode))
   if (!id) return null
   return data.events[id] || null
 }
 
-export function getEventById(id: string): StoreEvent | null {
-  const data = loadData()
+export async function getEventById(id: string): Promise<StoreEvent | null> {
+  const data = await loadData(true)
   return data.events[id] || null
 }
 
-export function updateEventStatus(id: string, status: StoreEvent['status']): void {
-  const data = loadData()
+export async function updateEventStatus(id: string, status: StoreEvent['status']): Promise<void> {
+  const data = await loadData(true)
   const ev = data.events[id]
   if (ev) {
     ev.status = status
     data.events[id] = ev
-    saveData(data)
-    console.log(`[Store:File] Estado del evento ${id} actualizado a "${status}"`)
+    await saveData(data)
+    console.log(`[Store] Estado del evento ${id} actualizado a "${status}"`)
   }
 }
 
-export function updateEventSettings(
+export async function updateEventSettings(
   id: string,
   settings: Partial<Pick<StoreEvent, 'name' | 'budget_min' | 'budget_max' | 'event_date' | 'rules' | 'gift_type' | 'preference_count'>>
-): StoreEvent | null {
-  const data = loadData()
+): Promise<StoreEvent | null> {
+  const data = await loadData(true)
   const ev = data.events[id]
   if (!ev) return null
 
@@ -208,13 +289,13 @@ export function updateEventSettings(
   if (settings.preference_count !== undefined) ev.preference_count = Number(settings.preference_count)
 
   data.events[id] = ev
-  saveData(data)
-  console.log(`[Store:File] ✅ Ajustes del evento ${id} actualizados:`, settings)
+  await saveData(data)
+  console.log(`[Store] ✅ Ajustes del evento ${id} actualizados:`, settings)
   return ev
 }
 
-export function addMember(member: StoreMember): void {
-  const data = loadData()
+export async function addMember(member: StoreMember): Promise<void> {
+  const data = await loadData(true)
   const list = data.membersByEvent[member.event_id] || []
   const existing = list.findIndex(m => m.user_id === member.user_id)
   if (existing >= 0) {
@@ -223,17 +304,17 @@ export function addMember(member: StoreMember): void {
     list.push(member)
   }
   data.membersByEvent[member.event_id] = list
-  saveData(data)
-  console.log(`[Store:File] Miembro "${member.display_name}" guardado en evento ${member.event_id}`)
+  await saveData(data)
+  console.log(`[Store] Miembro "${member.display_name}" guardado en evento ${member.event_id}`)
 }
 
-export function getMembers(eventId: string): StoreMember[] {
-  const data = loadData()
+export async function getMembers(eventId: string): Promise<StoreMember[]> {
+  const data = await loadData(true)
   return data.membersByEvent[eventId] || []
 }
 
-export function savePreferences(eventId: string, userId: string, values: string[]): void {
-  const data = loadData()
+export async function savePreferences(eventId: string, userId: string, values: string[]): Promise<void> {
+  const data = await loadData(true)
   let list = data.prefsByEvent[eventId] || []
   list = list.filter(p => p.user_id !== userId)
   values.forEach((value, index) => {
@@ -242,12 +323,12 @@ export function savePreferences(eventId: string, userId: string, values: string[
     }
   })
   data.prefsByEvent[eventId] = list
-  saveData(data)
-  console.log(`[Store:File] Preferencias guardadas para user=${userId} en evento=${eventId}`)
+  await saveData(data)
+  console.log(`[Store] Preferencias guardadas para user=${userId} en evento=${eventId}`)
 }
 
-export function getPreferences(eventId: string, userId: string): string[] {
-  const data = loadData()
+export async function getPreferences(eventId: string, userId: string): Promise<string[]> {
+  const data = await loadData(true)
   const list = data.prefsByEvent[eventId] || []
   return list
     .filter(p => p.user_id === userId)
@@ -255,21 +336,20 @@ export function getPreferences(eventId: string, userId: string): string[] {
     .map(p => p.value)
 }
 
-export function getAllPreferences(eventId: string): StorePreference[] {
-  const data = loadData()
+export async function getAllPreferences(eventId: string): Promise<StorePreference[]> {
+  const data = await loadData(true)
   return data.prefsByEvent[eventId] || []
 }
 
-export function getProgress(eventId: string): { total: number; completed: number; status: string } {
-  const data = loadData()
+export async function getProgress(eventId: string): Promise<{ total: number; completed: number; status: string }> {
+  const data = await loadData(true)
   const ev = data.events[eventId]
   const members = data.membersByEvent[eventId] || []
   const required = ev?.preference_count || 3
 
   let completed = 0
   for (const m of members) {
-    const prefs = (data.prefsByEvent[eventId] || [])
-      .filter(p => p.user_id === m.user_id)
+    const prefs = (data.prefsByEvent[eventId] || []).filter(p => p.user_id === m.user_id)
     if (prefs.length >= required) completed++
   }
 
@@ -280,8 +360,8 @@ export function getProgress(eventId: string): { total: number; completed: number
   }
 }
 
-export function runDraw(eventId: string): StoreAssignment[] {
-  const data = loadData()
+export async function runDraw(eventId: string): Promise<StoreAssignment[]> {
+  const data = await loadData(true)
   const members = data.membersByEvent[eventId] || []
   if (members.length < 2) throw new Error('Se necesitan al menos 2 participantes.')
 
@@ -307,14 +387,14 @@ export function runDraw(eventId: string): StoreAssignment[] {
   if (data.events[eventId]) {
     data.events[eventId].status = 'drawn'
   }
-  saveData(data)
+  await saveData(data)
 
-  console.log(`[Store:File] 🎉 Sorteo completado para evento ${eventId}: ${assignments.length} parejas`)
+  console.log(`[Store] 🎉 Sorteo completado para evento ${eventId}: ${assignments.length} parejas`)
   return assignments
 }
 
-export function getMyAssignment(eventId: string, userId: string): { recipientName: string; preferences: string[] } | null {
-  const data = loadData()
+export async function getMyAssignment(eventId: string, userId: string): Promise<{ recipientName: string; preferences: string[] } | null> {
+  const data = await loadData(true)
   const assignments = data.assignmentsByEvent[eventId] || []
   const mine = assignments.find(a => a.giver_user_id === userId)
   if (!mine) return null
@@ -334,15 +414,14 @@ export function getMyAssignment(eventId: string, userId: string): { recipientNam
   }
 }
 
-export function getAssignments(eventId: string): StoreAssignment[] {
-  const data = loadData()
+export async function getAssignments(eventId: string): Promise<StoreAssignment[]> {
+  const data = await loadData(true)
   return data.assignmentsByEvent[eventId] || []
 }
 
-export function debugGetAll() {
-  const data = loadData()
+export async function debugGetAll() {
+  const data = await loadData(true)
   return {
-    dataFile: DATA_FILE,
     eventCount: Object.keys(data.events).length,
     codes: data.eventsByCode,
     events: Object.values(data.events),
@@ -355,7 +434,7 @@ export function debugGetAll() {
 
 // ---- Funciones de Usuario y Autenticación ----
 
-export function registerUser(username: string, password: string, displayName?: string): StoreUser {
+export async function registerUser(username: string, password: string, displayName?: string): Promise<StoreUser> {
   const cleanUsername = (username || '').trim().toLowerCase()
   const cleanPassword = (password || '').trim()
   const cleanName = (displayName || '').trim() || username.trim()
@@ -363,7 +442,7 @@ export function registerUser(username: string, password: string, displayName?: s
   if (!cleanUsername) throw new Error('Ingresá un nombre de usuario.')
   if (!cleanPassword) throw new Error('Ingresá una contraseña.')
 
-  const data = loadData()
+  const data = await loadData(true)
   if (!data.users) data.users = {}
 
   if (data.users[cleanUsername]) {
@@ -380,19 +459,19 @@ export function registerUser(username: string, password: string, displayName?: s
   }
 
   data.users[cleanUsername] = newUser
-  saveData(data)
+  await saveData(data)
   console.log(`[Store:Auth] ✅ Usuario registrado con éxito: "${cleanUsername}" (${id})`)
   return newUser
 }
 
-export function loginUser(username: string, password: string): StoreUser {
+export async function loginUser(username: string, password: string): Promise<StoreUser> {
   const cleanUsername = (username || '').trim().toLowerCase()
   const cleanPassword = (password || '').trim()
 
   if (!cleanUsername) throw new Error('Ingresá tu nombre de usuario.')
   if (!cleanPassword) throw new Error('Ingresá tu contraseña.')
 
-  const data = loadData()
+  const data = await loadData(true)
   const user = data.users?.[cleanUsername]
 
   if (!user) {
@@ -407,14 +486,14 @@ export function loginUser(username: string, password: string): StoreUser {
   return user
 }
 
-export function getUserById(userId: string): StoreUser | null {
-  const data = loadData()
+export async function getUserById(userId: string): Promise<StoreUser | null> {
+  const data = await loadData(true)
   const found = Object.values(data.users || {}).find(u => u.id === userId)
   return found || null
 }
 
-export function getUserEvents(userId: string): UserEventSummary[] {
-  const data = loadData()
+export async function getUserEvents(userId: string): Promise<UserEventSummary[]> {
+  const data = await loadData(true)
   const results: UserEventSummary[] = []
 
   for (const [eventId, members] of Object.entries(data.membersByEvent || {})) {

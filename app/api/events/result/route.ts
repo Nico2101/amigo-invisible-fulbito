@@ -13,12 +13,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Faltan event_id y user_id' }, { status: 400 })
     }
 
-    const result = store.getMyAssignment(event_id, user_id)
+    const result = await store.getMyAssignment(event_id, user_id)
     if (!result) {
       return NextResponse.json({ error: 'No hay una asignación para este usuario.' }, { status: 404 })
     }
 
-    const ev = store.getEventById(event_id)
+    const ev = await store.getEventById(event_id)
 
     console.log(`[API /api/events/result] ✅ Resultado para ${user_id}: ${result.recipientName}`)
     return NextResponse.json({
@@ -47,12 +47,12 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Faltan event_id y user_id' }, { status: 400 })
     }
 
-    const result = store.getMyAssignment(event_id, user_id)
+    const result = await store.getMyAssignment(event_id, user_id)
     if (!result) {
       return NextResponse.json({ error: 'No hay una asignación para este usuario.' }, { status: 404 })
     }
 
-    const ev = store.getEventById(event_id)
+    const ev = await store.getEventById(event_id)
 
     return NextResponse.json({
       ...result,

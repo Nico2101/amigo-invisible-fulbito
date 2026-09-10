@@ -13,8 +13,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Faltan campos obligatorios' }, { status: 400 })
     }
 
-    store.savePreferences(event_id, user_id, preferences)
-    const progress = store.getProgress(event_id)
+    await store.savePreferences(event_id, user_id, preferences)
+    const progress = await store.getProgress(event_id)
 
     console.log(`[API /api/events/prefs] ✅ Preferencias guardadas. Progreso: ${progress.completed}/${progress.total}`)
     return NextResponse.json({ success: true, progress })

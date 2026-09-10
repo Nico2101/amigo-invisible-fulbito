@@ -13,13 +13,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Faltan campos obligatorios' }, { status: 400 })
     }
 
-    const ev = store.getEventByCode(code)
+    const ev = await store.getEventByCode(code)
     if (!ev) {
       console.log(`[API /api/events/join] ⚠️ Evento no encontrado: ${code}`)
       return NextResponse.json({ error: `No se encontró ningún evento con el código ${code}` }, { status: 404 })
     }
 
-    store.addMember({
+    await store.addMember({
       event_id: ev.id,
       user_id,
       display_name,
@@ -27,8 +27,8 @@ export async function POST(req: NextRequest) {
       joined_at: new Date().toISOString(),
     })
 
-    const members = store.getMembers(ev.id)
-    const prefs = store.getPreferences(ev.id, user_id)
+    const members = await store.getMembers(ev.id)
+    const prefs = await store.getPreferences(ev.id, user_id)
 
     console.log(`[API /api/events/join] ✅ ${display_name} se unió a ${ev.name}`)
     return NextResponse.json({ event: ev, members, myPrefs: prefs })

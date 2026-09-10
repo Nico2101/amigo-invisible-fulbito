@@ -26,7 +26,7 @@ export async function POST(req: NextRequest) {
     const code = crypto.randomUUID().slice(0, 6).toUpperCase()
     const id = crypto.randomUUID()
 
-    const ev = store.createEvent({
+    const ev = await store.createEvent({
       id,
       code,
       name: name.trim(),
@@ -42,7 +42,7 @@ export async function POST(req: NextRequest) {
       created_at: new Date().toISOString(),
     })
 
-    store.addMember({
+    await store.addMember({
       event_id: id,
       user_id: organizer_id,
       display_name: organizer_name,
@@ -68,7 +68,7 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'Faltan id del evento y user_id' }, { status: 400 })
     }
 
-    const ev = store.getEventById(id)
+    const ev = await store.getEventById(id)
     if (!ev) {
       return NextResponse.json({ error: 'Evento no encontrado' }, { status: 404 })
     }
@@ -81,7 +81,7 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json({ error: 'No se puede modificar la configuración de un evento ya sorteado' }, { status: 400 })
     }
 
-    const updated = store.updateEventSettings(id, updates)
+    const updated = await store.updateEventSettings(id, updates)
     return NextResponse.json(updated)
   } catch (err) {
     console.error('[API /api/events PATCH] ❌ Error:', err)
@@ -99,7 +99,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Falta el parámetro code' }, { status: 400 })
     }
 
-    const ev = store.getEventByCode(code)
+    const ev = await store.getEventByCode(code)
     if (!ev) {
       console.log(`[API /api/events GET] ⚠️ No se encontró evento con código: ${code}`)
       return NextResponse.json({ error: `No se encontró ningún evento con el código ${code}` }, { status: 404 })

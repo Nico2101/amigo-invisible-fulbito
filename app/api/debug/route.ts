@@ -3,7 +3,7 @@ import * as store from '@/lib/store'
 
 // GET /api/debug — Ver estado del store en memoria (solo para desarrollo)
 export async function GET() {
-  const storeState = store.debugGetAll()
+  const storeState = await store.debugGetAll()
 
   console.log('[API /api/debug] Estado actual del store:')
   console.log('  Eventos:', storeState.eventCount)

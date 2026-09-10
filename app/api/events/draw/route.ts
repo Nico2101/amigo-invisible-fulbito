@@ -13,21 +13,23 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Falta event_id' }, { status: 400 })
     }
 
-    const assignments = store.runDraw(event_id)
-    const members = store.getMembers(event_id)
+    const assignments = await store.runDraw(event_id)
+    const members = await store.getMembers(event_id)
 
     // Construir info de notificaciones
-    const notifications = assignments.map(a => {
-      const giver = members.find(m => m.user_id === a.giver_user_id)
-      const recipient = members.find(m => m.user_id === a.recipient_user_id)
-      const prefs = recipient ? store.getPreferences(event_id, recipient.user_id) : []
+    const notifications = await Promise.all(
+      assignments.map(async a => {
+        const giver = members.find(m => m.user_id === a.giver_user_id)
+        const recipient = members.find(m => m.user_id === a.recipient_user_id)
+        const prefs = recipient ? await store.getPreferences(event_id, recipient.user_id) : []
 
-      return {
-        giverName: giver?.display_name || '?',
-        recipientName: recipient?.display_name || '?',
-        preferences: prefs,
-      }
-    })
+        return {
+          giverName: giver?.display_name || '?',
+          recipientName: recipient?.display_name || '?',
+          preferences: prefs,
+        }
+      })
+    )
 
     console.log(`[API /api/events/draw] ✅ Sorteo completado: ${assignments.length} asignaciones`)
     return NextResponse.json({ success: true, assignments: notifications })
