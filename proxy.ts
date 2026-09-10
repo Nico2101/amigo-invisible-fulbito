@@ -1,8 +1,8 @@
-import { type NextRequest } from 'next/server'
-import { updateSession } from '@/lib/supabase/proxy'
+import { type NextRequest, NextResponse } from 'next/server'
 
 export async function proxy(request: NextRequest) {
-  return await updateSession(request)
+  // Pass through sin Supabase auth
+  return NextResponse.next({ request })
 }
 
 export const config = {
