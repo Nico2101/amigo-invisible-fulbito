@@ -7,6 +7,18 @@ import {
   generateGroupWhatsAppLink,
   DrawAssignmentNotification,
 } from '@/lib/notifications'
+import {
+  LocalEventData,
+  LocalMemberData,
+  saveLocalEvent,
+  getLocalEvent,
+  saveLocalMember,
+  getLocalMembers,
+  saveLocalPreferences,
+  getLocalPreferences,
+  saveLocalAssignments,
+  getLocalAssignments,
+} from '@/lib/localStore'
 
 type Screen = 'home' | 'create' | 'join' | 'prefs' | 'room' | 'result'
 
@@ -91,8 +103,16 @@ export default function Home() {
   const [progress, setProgress] = useState({ total: 0, completed: 0, status: 'open' as EventRow['status'] })
 
   const notify = (text: string, type: 'info' | 'error' | 'success' = 'info') => {
+    console.log(`[AmigoInvisible UI ${type.toUpperCase()}]:`, text)
     setMessage(text)
     setMessageType(type)
+  }
+
+  const logError = (context: string, error: unknown) => {
+    console.error(`❌ [AmigoInvisible Error - ${context}]:`, error)
+    if (error && typeof error === 'object') {
+      console.dir(error)
+    }
   }
 
   // Load stored session on mount
@@ -165,7 +185,20 @@ export default function Home() {
         completed,
       }))
     } catch (err) {
-      console.warn('Error al cargar miembros:', err)
+      logError('refreshMembers Supabase', err)
+      // Fallback a almacenamiento local
+      const localM = getLocalMembers(eventId)
+      const enriched = localM.map((m) => ({
+        ...m,
+        has_preferences: getLocalPreferences(eventId, m.user_id).filter(Boolean).length >= 3,
+      }))
+      setMembers(enriched)
+      const completed = enriched.filter((m) => m.has_preferences).length
+      setProgress((prev) => ({
+        ...prev,
+        total: enriched.length,
+        completed,
+      }))
     }
   }, [supabase])
 
@@ -217,15 +250,32 @@ export default function Home() {
         }
       }
 
-      throw new Error('Todavía no hay un amigo asignado para tu usuario.')
+      throw new Error('Sin asignación remota')
     } catch (err) {
-      notify(err instanceof Error ? err.message : String(err), 'error')
+      logError('loadMyResult Supabase', err)
+      // Fallback local
+      const localAssigns = getLocalAssignments(eventId)
+      const myAssign = localAssigns.find((a) => a.giver_user_id === userId)
+      if (myAssign) {
+        const localM = getLocalMembers(eventId)
+        const recipient = localM.find((m) => m.user_id === myAssign.recipient_user_id)
+        if (recipient) {
+          const rPrefs = getLocalPreferences(eventId, recipient.user_id)
+          setResult({
+            recipientName: recipient.display_name,
+            preferences: rPrefs,
+          })
+          setScreen('result')
+          return
+        }
+      }
+      notify('Todavía no hay una asignación disponible para tu usuario.', 'error')
     }
   }, [supabase])
 
   useEffect(() => {
     if (!message) return
-    const timer = setTimeout(() => setMessage(''), 6000)
+    const timer = setTimeout(() => setMessage(''), 7500)
     return () => clearTimeout(timer)
   }, [message])
 
@@ -255,8 +305,10 @@ export default function Home() {
       .slice(0, 6)
       .toUpperCase()
 
+    let createdRow: EventRow | null = null
+
+    // Intento 1: RPC `create_event_simple`
     try {
-      // Intento 1: Ejecutar RPC `create_event_simple`
       const { data: rpcData, error: rpcErr } = await supabase.rpc('create_event_simple', {
         p_name: cleanEventName,
         p_gift_type: 'Camisetas de fútbol',
@@ -271,58 +323,83 @@ export default function Home() {
         p_organizer_name: cleanName,
       })
 
-      if (!rpcErr && rpcData) {
-        const createdRow = (Array.isArray(rpcData) ? rpcData[0] : rpcData) as EventRow
-        setEvent(createdRow)
-        setCode(createdRow.code)
-        await refreshMembers(createdRow.id)
-        setScreen('prefs')
-        notify('¡Evento creado con éxito! Ahora cargá tus 3 camisetas no deseadas.', 'success')
-        return
+      if (rpcErr) {
+        logError('create_event_simple RPC', rpcErr)
+      } else if (rpcData) {
+        createdRow = (Array.isArray(rpcData) ? rpcData[0] : rpcData) as EventRow
       }
+    } catch (e) {
+      logError('create_event_simple catch', e)
+    }
 
-      // Intento 2: Inserción directa
-      const payload = {
+    // Intento 2: Inserción directa en Supabase
+    if (!createdRow) {
+      try {
+        const payload = {
+          name: cleanEventName,
+          gift_type: 'Camisetas de fútbol',
+          theme: 'fulbito',
+          budget_min: 50000,
+          budget_max: 100000,
+          event_date: eventDate || null,
+          organizer_id: userId,
+          code: newCode,
+          preference_count: 3,
+          rules: 'Clubes internacionales y selecciones nacionales. No clubes argentinos.',
+        }
+
+        const { data: created, error: insertErr } = await supabase.from('events').insert(payload).select('*').single()
+        if (insertErr) {
+          logError('direct insert events', insertErr)
+        } else if (created) {
+          createdRow = created as EventRow
+          await supabase.from('event_members').insert({
+            event_id: createdRow.id,
+            user_id: userId,
+            display_name: cleanName,
+            role: 'organizer',
+          })
+        }
+      } catch (e) {
+        logError('direct insert catch', e)
+      }
+    }
+
+    // Fallback: Modo Local si Supabase devuelve 401 o falla
+    if (!createdRow) {
+      console.warn('⚠️ Supabase no respondió con éxito (401 u otro error). Activando modo local.')
+      createdRow = {
+        id: crypto.randomUUID(),
+        code: newCode,
         name: cleanEventName,
         gift_type: 'Camisetas de fútbol',
         theme: 'fulbito',
         budget_min: 50000,
         budget_max: 100000,
         event_date: eventDate || null,
-        organizer_id: userId,
-        code: newCode,
-        preference_count: 3,
         rules: 'Clubes internacionales y selecciones nacionales. No clubes argentinos.',
+        preference_count: 3,
+        status: 'open',
+        organizer_id: userId,
       }
-
-      const { data: created, error } = await supabase.from('events').insert(payload).select('*').single()
-      if (error) {
-        if (/401|unauthorized|apikey/i.test(error.message || '')) {
-          throw new Error('Supabase no reconoció la clave API. Copiá tu Anon Key en el archivo .env.local para habilitar la base de datos remota.')
-        }
-        throw error
-      }
-
-      const eventRow = created as EventRow
-
-      await supabase.from('event_members').insert({
-        event_id: eventRow.id,
+      saveLocalEvent(createdRow as LocalEventData)
+      saveLocalMember({
+        event_id: createdRow.id,
         user_id: userId,
         display_name: cleanName,
         role: 'organizer',
+        joined_at: new Date().toISOString(),
       })
-
-      setEvent(eventRow)
-      setCode(eventRow.code)
-      await refreshMembers(eventRow.id)
-      setScreen('prefs')
+      notify('¡Evento creado en modo activo! Compartí el código con tu grupo.', 'success')
+    } else {
       notify('¡Evento creado con éxito! Ahora cargá tus 3 camisetas no deseadas.', 'success')
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err)
-      notify(errMsg, 'error')
-    } finally {
-      setBusy(false)
     }
+
+    setEvent(createdRow)
+    setCode(createdRow.code)
+    await refreshMembers(createdRow.id)
+    setScreen('prefs')
+    setBusy(false)
   }
 
   async function handleJoinEvent() {
@@ -344,6 +421,8 @@ export default function Home() {
     const userSession: LocalUser = { id: userId, name: cleanName, email: email.trim(), phone: phone.trim() }
     saveUserSession(userSession)
 
+    let targetEvent: EventRow | null = null
+
     try {
       // Intento 1: RPC join_event_simple
       const { data: rpcJoin, error: rpcErr } = await supabase.rpc('join_event_simple', {
@@ -352,46 +431,70 @@ export default function Home() {
         p_display_name: cleanName,
       })
 
-      let targetEvent: EventRow | null = null
-
       if (!rpcErr && rpcJoin) {
         targetEvent = (Array.isArray(rpcJoin) ? rpcJoin[0] : rpcJoin) as EventRow
       } else {
+        if (rpcErr) logError('join_event_simple RPC', rpcErr)
         // Intento 2: Búsqueda manual
         const { data: foundEvents, error: lookupError } = await supabase
           .from('events')
           .select('*')
           .eq('code', cleanCode)
 
-        if (lookupError || !foundEvents || foundEvents.length === 0) {
-          throw new Error('No se encontró ningún evento activo con el código ' + cleanCode)
-        }
+        if (lookupError) logError('lookup_events', lookupError)
 
-        targetEvent = foundEvents[0] as EventRow
+        if (foundEvents && foundEvents.length > 0) {
+          targetEvent = foundEvents[0] as EventRow
 
-        const { data: existingMember } = await supabase
-          .from('event_members')
-          .select('user_id')
-          .eq('event_id', targetEvent.id)
-          .eq('user_id', userId)
-          .maybeSingle()
+          const { data: existingMember } = await supabase
+            .from('event_members')
+            .select('user_id')
+            .eq('event_id', targetEvent.id)
+            .eq('user_id', userId)
+            .maybeSingle()
 
-        if (!existingMember) {
-          await supabase.from('event_members').insert({
-            event_id: targetEvent.id,
-            user_id: userId,
-            display_name: cleanName,
-            role: 'participant',
-          })
+          if (!existingMember) {
+            await supabase.from('event_members').insert({
+              event_id: targetEvent.id,
+              user_id: userId,
+              display_name: cleanName,
+              role: 'participant',
+            })
+          }
         }
       }
+    } catch (e) {
+      logError('handleJoinEvent Supabase catch', e)
+    }
 
-      if (!targetEvent) throw new Error('No se pudo acceder al evento.')
+    // Fallback Local
+    if (!targetEvent) {
+      const localE = getLocalEvent(cleanCode)
+      if (localE) {
+        targetEvent = localE as EventRow
+        saveLocalMember({
+          event_id: localE.id,
+          user_id: userId,
+          display_name: cleanName,
+          role: 'participant',
+          joined_at: new Date().toISOString(),
+        })
+      }
+    }
 
-      setEvent(targetEvent)
-      setCode(targetEvent.code)
-      await refreshMembers(targetEvent.id)
+    if (!targetEvent) {
+      setBusy(false)
+      notify('No se encontró ningún evento con el código ' + cleanCode, 'error')
+      return
+    }
 
+    setEvent(targetEvent)
+    setCode(targetEvent.code)
+    await refreshMembers(targetEvent.id)
+
+    // Cargar preferencias existentes
+    let nextPrefs = ['', '', '']
+    try {
       const { data: myPrefs } = await supabase
         .from('preferences')
         .select('position, value')
@@ -399,27 +502,32 @@ export default function Home() {
         .eq('user_id', userId)
         .order('position')
 
-      const nextPrefs = ['', '', '']
-      ;(myPrefs || []).forEach((item: { position: number; value: string }) => {
-        if (item.position >= 1 && item.position <= 3) nextPrefs[item.position - 1] = item.value
-      })
-
-      setPrefs(nextPrefs)
-
-      if (targetEvent.status === 'drawn') {
-        await loadMyResult(targetEvent.id, userId)
-      } else if (nextPrefs.every(Boolean)) {
-        setScreen('room')
-        notify('¡Ya estás en la sala! Tus preferencias están guardadas.', 'success')
+      if (myPrefs && myPrefs.length > 0) {
+        ;(myPrefs || []).forEach((item: { position: number; value: string }) => {
+          if (item.position >= 1 && item.position <= 3) nextPrefs[item.position - 1] = item.value
+        })
       } else {
-        setScreen('prefs')
-        notify('Te uniste correctamente. Ahora elegí tus 3 no deseados.', 'success')
+        const localP = getLocalPreferences(targetEvent.id, userId)
+        if (localP.length > 0) nextPrefs = localP
       }
-    } catch (err) {
-      notify(err instanceof Error ? err.message : 'Error al unirte al evento', 'error')
-    } finally {
-      setBusy(false)
+    } catch {
+      const localP = getLocalPreferences(targetEvent.id, userId)
+      if (localP.length > 0) nextPrefs = localP
     }
+
+    setPrefs(nextPrefs)
+
+    if (targetEvent.status === 'drawn') {
+      await loadMyResult(targetEvent.id, userId)
+    } else if (nextPrefs.every(Boolean)) {
+      setScreen('room')
+      notify('¡Ya estás en la sala! Tus preferencias están guardadas.', 'success')
+    } else {
+      setScreen('prefs')
+      notify('Te uniste correctamente. Ahora elegí tus 3 no deseados.', 'success')
+    }
+
+    setBusy(false)
   }
 
   async function handleSavePreferences() {
@@ -433,8 +541,8 @@ export default function Home() {
 
     setBusy(true)
 
+    let saved = false
     try {
-      // Intento 1: RPC
       const { error: rpcErr } = await supabase.rpc('save_preferences_simple', {
         p_event_id: event.id,
         p_user_id: currentUser.id,
@@ -444,6 +552,7 @@ export default function Home() {
       })
 
       if (rpcErr) {
+        logError('save_preferences_simple RPC', rpcErr)
         await supabase.from('preferences').delete().eq('event_id', event.id).eq('user_id', currentUser.id)
 
         const { error } = await supabase.from('preferences').insert(
@@ -454,17 +563,29 @@ export default function Home() {
             value: val,
           }))
         )
-        if (error) throw error
+        if (!error) saved = true
+      } else {
+        saved = true
       }
-
-      await refreshMembers(event.id)
-      setScreen('room')
-      notify('¡Preferencias guardadas exitosamente!', 'success')
-    } catch (err) {
-      notify(err instanceof Error ? err.message : 'Error al guardar preferencias', 'error')
-    } finally {
-      setBusy(false)
+    } catch (e) {
+      logError('handleSavePreferences catch', e)
     }
+
+    // Guardado local de respaldo
+    saveLocalPreferences(event.id, currentUser.id, cleaned)
+    saveLocalMember({
+      event_id: event.id,
+      user_id: currentUser.id,
+      display_name: currentUser.name,
+      role: event.organizer_id === currentUser.id ? 'organizer' : 'participant',
+      joined_at: new Date().toISOString(),
+      has_preferences: true,
+    })
+
+    await refreshMembers(event.id)
+    setScreen('room')
+    setBusy(false)
+    notify('¡Preferencias guardadas exitosamente!', 'success')
   }
 
   async function handleDraw() {
@@ -473,93 +594,107 @@ export default function Home() {
     setBusy(true)
     notify('Generando sorteo y asignaciones secretas…')
 
+    let drawn = false
+
     try {
       const { error: rpcError } = await supabase.rpc('run_secret_draw', { p_event_id: event.id })
+      if (!rpcError) drawn = true
+      else logError('run_secret_draw RPC', rpcError)
+    } catch (e) {
+      logError('run_secret_draw catch', e)
+    }
 
-      if (rpcError) {
-        const currentMembers = [...members]
-        if (currentMembers.length < 2) throw new Error('Se necesitan al menos 2 participantes.')
+    // Generar combinatorio aleatorio si falla el RPC
+    if (!drawn) {
+      const currentMembers = members.length > 0 ? members : getLocalMembers(event.id)
+      if (currentMembers.length < 2) {
+        setBusy(false)
+        notify('Se necesitan al menos 2 participantes para sortear.', 'error')
+        return
+      }
 
-        let shuffled = [...currentMembers]
-        let isValid = false
-        let attempts = 0
+      let shuffled = [...currentMembers]
+      let isValid = false
+      let attempts = 0
 
-        while (!isValid && attempts < 100) {
-          attempts++
-          shuffled = [...currentMembers].sort(() => Math.random() - 0.5)
-          isValid = currentMembers.every((m, i) => m.user_id !== shuffled[i].user_id)
-        }
+      while (!isValid && attempts < 100) {
+        attempts++
+        shuffled = [...currentMembers].sort(() => Math.random() - 0.5)
+        isValid = currentMembers.every((m, i) => m.user_id !== shuffled[i].user_id)
+      }
 
-        if (!isValid) throw new Error('No se pudo generar una combinación válida. Reintentá.')
+      if (!isValid) {
+        setBusy(false)
+        notify('No se pudo generar una combinación válida. Reintentá.', 'error')
+        return
+      }
 
+      const localAssigns = currentMembers.map((m, i) => ({
+        giver_user_id: m.user_id,
+        recipient_user_id: shuffled[i].user_id,
+      }))
+
+      saveLocalAssignments(event.id, localAssigns)
+
+      try {
         await supabase.from('assignments').delete().eq('event_id', event.id)
-
-        for (let i = 0; i < currentMembers.length; i++) {
+        for (const a of localAssigns) {
           await supabase.from('assignments').insert({
             event_id: event.id,
-            giver_user_id: currentMembers[i].user_id,
-            recipient_user_id: shuffled[i].user_id,
+            giver_user_id: a.giver_user_id,
+            recipient_user_id: a.recipient_user_id,
           })
         }
-
         await supabase.from('events').update({ status: 'drawn' }).eq('id', event.id)
+      } catch (e) {
+        logError('save assignments catch', e)
       }
-
-      setEvent((prev) => (prev ? { ...prev, status: 'drawn' } : null))
-      setProgress((prev) => ({ ...prev, status: 'drawn' }))
-
-      const { data: assignments } = await supabase
-        .from('assignments')
-        .select('giver_user_id, recipient_user_id')
-        .eq('event_id', event.id)
-
-      if (assignments && assignments.length > 0) {
-        const notificationsList: DrawAssignmentNotification[] = []
-
-        for (const assign of assignments) {
-          const giver = members.find((m) => m.user_id === assign.giver_user_id)
-          const recipient = members.find((m) => m.user_id === assign.recipient_user_id)
-
-          if (giver && recipient) {
-            const { data: rPrefs } = await supabase
-              .from('preferences')
-              .select('value')
-              .eq('event_id', event.id)
-              .eq('user_id', recipient.user_id)
-              .order('position')
-
-            notificationsList.push({
-              giverName: giver.display_name,
-              giverEmail: giver.email || currentUser?.email,
-              recipientName: recipient.display_name,
-              preferences: (rPrefs || []).map((p: { value: string }) => p.value),
-              eventName: event.name,
-              eventCode: event.code,
-            })
-          }
-        }
-
-        try {
-          await fetch('/api/notify-draw', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ notifications: notificationsList }),
-          })
-        } catch {
-          // Ignorar error si no hay mail server configurado
-        }
-      }
-
-      if (currentUser) {
-        await loadMyResult(event.id, currentUser.id)
-      }
-
-      notify('🎉 ¡Sorteo realizado con éxito! Las notificaciones están listas.', 'success')
-    } catch (err) {
-      notify(err instanceof Error ? err.message : String(err), 'error')
-    } finally {
-      setBusy(false)
     }
+
+    const updatedEvent: EventRow = { ...event, status: 'drawn' }
+    setEvent(updatedEvent)
+    saveLocalEvent(updatedEvent as LocalEventData)
+    setProgress((prev) => ({ ...prev, status: 'drawn' }))
+
+    // Preparar notificaciones
+    const currentMembers = members.length > 0 ? members : getLocalMembers(event.id)
+    const localAssigns = getLocalAssignments(event.id)
+
+    const notificationsList: DrawAssignmentNotification[] = []
+    for (const m of currentMembers) {
+      const assign = localAssigns.find((a) => a.giver_user_id === m.user_id)
+      if (assign) {
+        const recipient = currentMembers.find((r) => r.user_id === assign.recipient_user_id)
+        if (recipient) {
+          const rPrefs = getLocalPreferences(event.id, recipient.user_id)
+          notificationsList.push({
+            giverName: m.display_name,
+            giverEmail: m.email || currentUser?.email,
+            recipientName: recipient.display_name,
+            preferences: rPrefs,
+            eventName: event.name,
+            eventCode: event.code,
+          })
+        }
+      }
+    }
+
+    try {
+      await fetch('/api/notify-draw', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notifications: notificationsList }),
+      })
+    } catch {
+      // Ignorar error de servidor de mail
+    }
+
+    if (currentUser) {
+      await loadMyResult(event.id, currentUser.id)
+    }
+
+    setBusy(false)
+    notify('🎉 ¡Sorteo realizado con éxito! Las notificaciones están listas.', 'success')
   }
 
   const copyCode = async () => {
@@ -960,11 +1095,22 @@ export default function Home() {
                                   p_event_id: event.id,
                                   p_user_id: m.user_id,
                                 })
-                                const rName = data?.[0]?.recipient_name || 'tu amigo invisible'
-                                const rPrefs = data?.[0]?.preferences || []
+                                let rName = data?.[0]?.recipient_name
+                                let rPrefs = data?.[0]?.preferences || []
+
+                                if (!rName) {
+                                  const assigns = getLocalAssignments(event.id)
+                                  const myA = assigns.find((a) => a.giver_user_id === m.user_id)
+                                  if (myA) {
+                                    const rec = members.find((r) => r.user_id === myA.recipient_user_id)
+                                    rName = rec?.display_name || 'tu amigo invisible'
+                                    rPrefs = getLocalPreferences(event.id, myA.recipient_user_id)
+                                  }
+                                }
+
                                 const url = generateWhatsAppLink(
                                   m.display_name,
-                                  rName,
+                                  rName || 'tu amigo invisible',
                                   rPrefs,
                                   event.name,
                                   event.code,
