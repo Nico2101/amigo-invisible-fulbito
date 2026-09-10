@@ -39,7 +39,23 @@ export interface StoreAssignment {
   recipient_user_id: string
 }
 
+export interface StoreUser {
+  id: string
+  username: string
+  password: string
+  display_name: string
+  created_at: string
+}
+
+export interface UserEventSummary {
+  event: StoreEvent
+  role: 'organizer' | 'participant'
+  hasPreferences: boolean
+  isDrawn: boolean
+}
+
 interface StoreData {
+  users: Record<string, StoreUser> // username (lowercase) -> user
   events: Record<string, StoreEvent>
   eventsByCode: Record<string, string> // CODE -> event.id
   membersByEvent: Record<string, StoreMember[]>
@@ -57,6 +73,7 @@ let memoryCache: StoreData | null = null
 
 function getInitialData(): StoreData {
   return {
+    users: {},
     events: {},
     eventsByCode: {},
     membersByEvent: {},
@@ -105,6 +122,7 @@ function loadData(): StoreData {
     if (raw) {
       const parsed = JSON.parse(raw) as Partial<StoreData>
       memoryCache = {
+        users: parsed.users || {},
         events: parsed.events || {},
         eventsByCode: parsed.eventsByCode || {},
         membersByEvent: parsed.membersByEvent || {},
@@ -331,5 +349,92 @@ export function debugGetAll() {
     members: data.membersByEvent,
     preferences: data.prefsByEvent,
     assignments: data.assignmentsByEvent,
+    users: Object.values(data.users || {}).map(u => ({ id: u.id, username: u.username, display_name: u.display_name })),
   }
+}
+
+// ---- Funciones de Usuario y Autenticación ----
+
+export function registerUser(username: string, password: string, displayName?: string): StoreUser {
+  const cleanUsername = (username || '').trim().toLowerCase()
+  const cleanPassword = (password || '').trim()
+  const cleanName = (displayName || '').trim() || username.trim()
+
+  if (!cleanUsername) throw new Error('Ingresá un nombre de usuario.')
+  if (!cleanPassword) throw new Error('Ingresá una contraseña.')
+
+  const data = loadData()
+  if (!data.users) data.users = {}
+
+  if (data.users[cleanUsername]) {
+    throw new Error('El usuario ya existe. Elegí otro o iniciá sesión.')
+  }
+
+  const id = `usr_${cleanUsername}`
+  const newUser: StoreUser = {
+    id,
+    username: cleanUsername,
+    password: cleanPassword,
+    display_name: cleanName,
+    created_at: new Date().toISOString(),
+  }
+
+  data.users[cleanUsername] = newUser
+  saveData(data)
+  console.log(`[Store:Auth] ✅ Usuario registrado con éxito: "${cleanUsername}" (${id})`)
+  return newUser
+}
+
+export function loginUser(username: string, password: string): StoreUser {
+  const cleanUsername = (username || '').trim().toLowerCase()
+  const cleanPassword = (password || '').trim()
+
+  if (!cleanUsername) throw new Error('Ingresá tu nombre de usuario.')
+  if (!cleanPassword) throw new Error('Ingresá tu contraseña.')
+
+  const data = loadData()
+  const user = data.users?.[cleanUsername]
+
+  if (!user) {
+    throw new Error('Ese usuario no existe. Por favor registrate primero.')
+  }
+
+  if (user.password !== cleanPassword) {
+    throw new Error('Contraseña incorrecta.')
+  }
+
+  console.log(`[Store:Auth] ✅ Inicio de sesión exitoso: "${cleanUsername}"`)
+  return user
+}
+
+export function getUserById(userId: string): StoreUser | null {
+  const data = loadData()
+  const found = Object.values(data.users || {}).find(u => u.id === userId)
+  return found || null
+}
+
+export function getUserEvents(userId: string): UserEventSummary[] {
+  const data = loadData()
+  const results: UserEventSummary[] = []
+
+  for (const [eventId, members] of Object.entries(data.membersByEvent || {})) {
+    const member = members.find(m => m.user_id === userId)
+    if (member) {
+      const event = data.events[eventId]
+      if (event) {
+        const prefs = (data.prefsByEvent[eventId] || []).filter(p => p.user_id === userId)
+        const hasPreferences = prefs.length >= (event.preference_count || 3)
+        results.push({
+          event,
+          role: member.role,
+          hasPreferences,
+          isDrawn: event.status === 'drawn',
+        })
+      }
+    }
+  }
+
+  // Ordenar los más recientes primero
+  results.sort((a, b) => new Date(b.event.created_at).getTime() - new Date(a.event.created_at).getTime())
+  return results
 }

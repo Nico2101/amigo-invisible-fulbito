@@ -75,7 +75,7 @@ export function generateInviteWhatsAppLink(
     `\n` +
     `👉 *Sumate directamente al plantel con este link:*\n` +
     `${directLink}\n\n` +
-    `*(Solo entrás con tu nombre y cargás tus 3 camisetas no deseadas. ¡Sin registro ni contraseñas!)*\n\n` +
+    `*(Iniciás sesión con tu usuario y contraseña, o creás tu cuenta en 1 paso para sincronizar tus camisetas en cualquier dispositivo)*\n\n` +
     `¡No te cuelgues!`
 
   return `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`

@@ -635,6 +635,47 @@ input:focus{
 }
 .user-bar strong{font-size:14px;color:#e0f2e5}
 
+/* Mis Eventos Grid & Cards */
+.my-events-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+.my-event-card {
+  background: linear-gradient(135deg, #0c2314, #06160d);
+  border: 1px solid #1c492b;
+  border-radius: 20px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 14px;
+  transition: all .18s ease;
+}
+.my-event-card:hover {
+  border-color: #34d399;
+  transform: translateY(-2px);
+  box-shadow: 0 12px 32px rgba(0,0,0,.4);
+}
+.my-event-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.my-event-card h3 {
+  margin: 4px 0;
+  font-size: 18px;
+  color: #f1fff4;
+  font-weight: 800;
+}
+.my-event-card p {
+  margin: 0;
+  color: #8daea0;
+  font-size: 13px;
+}
+
 /* Presets & Chips */
 .preset-group{
   display:flex;
@@ -1025,6 +1066,11 @@ button, .button {
     width: auto;
     bottom: max(12px, env(safe-area-inset-bottom));
     padding: 12px 14px;
+  }
+
+  .my-events-grid {
+    grid-template-columns: 1fr;
+    gap: 12px;
   }
 
   .footer {

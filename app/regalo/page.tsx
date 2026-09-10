@@ -3,13 +3,8 @@
 import { Suspense, useCallback, useEffect, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
-
-interface LocalUser {
-  id: string
-  name: string
-  email: string
-  phone: string
-}
+import { AuthUser, getStoredUser, clearStoredUser } from '@/lib/authClient'
+import { AuthCard } from '@/components/AuthCard'
 
 interface EventRow {
   id: string
@@ -38,8 +33,6 @@ interface ResultData {
   giftType: string
 }
 
-const USER_SESSION_KEY = 'amigo-invisible.user-session.v5'
-
 async function api<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     headers: { 'Content-Type': 'application/json' },
@@ -52,76 +45,99 @@ async function api<T>(url: string, options?: RequestInit): Promise<T> {
   return data as T
 }
 
-function RegaloContent() {
+function RegaloContent({
+  currentUser,
+  onUserUpdate,
+}: {
+  currentUser: AuthUser | null
+  onUserUpdate: (u: AuthUser | null) => void
+}) {
   const router = useRouter()
   const searchParams = useSearchParams()
   const codeParam = searchParams.get('code') || ''
 
-  const [currentUser, setCurrentUser] = useState<LocalUser | null>(null)
   const [event, setEvent] = useState<EventRow | null>(null)
   const [result, setResult] = useState<ResultData | null>(null)
   const [isRevealed, setIsRevealed] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
-  const loadData = useCallback(async () => {
-    setLoading(true)
-    setError('')
+  const loadData = useCallback(
+    async (userToUse: AuthUser | null) => {
+      setLoading(true)
+      setError('')
 
-    try {
-      const stored = localStorage.getItem(USER_SESSION_KEY)
-      let user: LocalUser | null = null
-      if (stored) {
-        user = JSON.parse(stored)
-        setCurrentUser(user)
-      }
+      try {
+        const user = userToUse || getStoredUser()
+        if (!user) {
+          setLoading(false)
+          return
+        }
 
-      if (!user) {
-        setError('No encontramos tu sesión de jugador en este dispositivo. Por favor ingresá a la sala con tu nombre primero.')
+        let eventCode = codeParam.trim().toUpperCase()
+        if (!eventCode) {
+          eventCode = localStorage.getItem('amigo_last_event_code') || ''
+        }
+
+        if (!eventCode) {
+          setError('No se especificó un código de evento. Por favor ingresá a la sala desde el enlace del evento.')
+          setLoading(false)
+          return
+        }
+
+        localStorage.setItem('amigo_last_event_code', eventCode)
+
+        const ev = await api<EventRow>(`/api/events?code=${eventCode}`)
+        setEvent(ev)
+
+        if (ev.status !== 'drawn') {
+          setError('El sorteo de este evento todavía no se ha realizado. Volvé a la sala para ver el progreso.')
+          setLoading(false)
+          return
+        }
+
+        const res = await api<ResultData>('/api/events/result', {
+          method: 'POST',
+          body: JSON.stringify({ event_id: ev.id, user_id: user.id }),
+        })
+
+        setResult(res)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Error al obtener tu amigo invisible.')
+      } finally {
         setLoading(false)
-        return
       }
-
-      let eventCode = codeParam.trim().toUpperCase()
-      if (!eventCode) {
-        // Buscar código guardado previamente
-        eventCode = localStorage.getItem('amigo_last_event_code') || ''
-      }
-
-      if (!eventCode) {
-        setError('No se especificó un código de evento. Por favor ingresá a la sala desde el enlace del evento.')
-        setLoading(false)
-        return
-      }
-
-      // Guardar último código para recargas sin query params
-      localStorage.setItem('amigo_last_event_code', eventCode)
-
-      const ev = await api<EventRow>(`/api/events?code=${eventCode}`)
-      setEvent(ev)
-
-      if (ev.status !== 'drawn') {
-        setError('El sorteo de este evento todavía no se ha realizado. Volvé a la sala para ver el progreso.')
-        setLoading(false)
-        return
-      }
-
-      const res = await api<ResultData>('/api/events/result', {
-        method: 'POST',
-        body: JSON.stringify({ event_id: ev.id, user_id: user.id }),
-      })
-
-      setResult(res)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Error al obtener tu amigo invisible.')
-    } finally {
-      setLoading(false)
-    }
-  }, [codeParam])
+    },
+    [codeParam]
+  )
 
   useEffect(() => {
-    loadData()
-  }, [loadData])
+    loadData(currentUser)
+  }, [loadData, currentUser])
+
+  const handleAuthSuccess = (user: AuthUser) => {
+    onUserUpdate(user)
+    loadData(user)
+  }
+
+  if (!currentUser) {
+    return (
+      <div className="content-layout narrow" style={{ padding: '30px 10px' }}>
+        <div style={{ textAlign: 'center', marginBottom: 20 }}>
+          <div className="eyebrow" style={{ color: '#22c55e' }}>Resultado del Sorteo</div>
+          <h2 style={{ margin: '6px 0', fontSize: 24 }}>¿Quién te tocó regalarle?</h2>
+          <p style={{ color: '#8aa494', fontSize: 14 }}>
+            Iniciá sesión con tu cuenta para ver de forma secreta a tu amigo invisible asignado.
+          </p>
+        </div>
+        <AuthCard
+          onSuccess={handleAuthSuccess}
+          title="Ingresá con tu cuenta"
+          subtitle="Identificate con tu usuario y contraseña para revelar tu amigo invisible."
+        />
+      </div>
+    )
+  }
 
   if (loading) {
     return (
@@ -138,7 +154,7 @@ function RegaloContent() {
         <div style={{ fontSize: 44, marginBottom: 12 }}>🔒</div>
         <h2>No pudimos cargar tu resultado</h2>
         <p style={{ color: '#f5c6c2', maxWidth: 480, margin: '0 auto 24px', lineHeight: 1.5 }}>{error}</p>
-        <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
+        <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }}>
           {event?.code ? (
             <Link href={`/evento/${event.code}`} className="button primary large">
               ← Ir a la sala del evento
@@ -201,7 +217,9 @@ function RegaloContent() {
 
         <div className="result-card">
           <span>💰 PRESUPUESTO</span>
-          <h3>${result.budgetMin.toLocaleString('es-AR')} – ${result.budgetMax.toLocaleString('es-AR')}</h3>
+          <h3>
+            ${result.budgetMin.toLocaleString('es-AR')} – ${result.budgetMax.toLocaleString('es-AR')}
+          </h3>
           <p>Monto fijado por el organizador para este evento.</p>
         </div>
 
@@ -229,6 +247,17 @@ function RegaloContent() {
 }
 
 export default function RegaloPage() {
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null)
+
+  useEffect(() => {
+    setCurrentUser(getStoredUser())
+  }, [])
+
+  const handleLogout = () => {
+    clearStoredUser()
+    setCurrentUser(null)
+  }
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -239,21 +268,42 @@ export default function RegaloPage() {
             <small>FULBITO</small>
           </span>
         </Link>
+        <div className="topbar-right">
+          {currentUser ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span className="user-chip">👤 {currentUser.display_name}</span>
+              <button
+                onClick={handleLogout}
+                className="button ghost small-button"
+                style={{ padding: '5px 10px', fontSize: 12 }}
+                title="Cerrar sesión"
+              >
+                Salir
+              </button>
+            </div>
+          ) : (
+            <span className="user-chip" style={{ opacity: 0.8 }}>🔒 Requiere cuenta</span>
+          )}
+        </div>
       </header>
 
       <main className="page">
-        <Suspense fallback={
-          <div style={{ textAlign: 'center', padding: '80px 20px' }}>
-            <h2>Cargando regalo…</h2>
-          </div>
-        }>
-          <RegaloContent />
+        <Suspense
+          fallback={
+            <div style={{ textAlign: 'center', padding: '80px 20px' }}>
+              <h2>Cargando regalo…</h2>
+            </div>
+          }
+        >
+          <RegaloContent currentUser={currentUser} onUserUpdate={setCurrentUser} />
         </Suspense>
       </main>
 
       <footer className="footer">
         <span>⚽ Amigo Invisible · Fulbito</span>
-        <Link href="/" style={{ color: '#88a693', textDecoration: 'none' }}>Inicio</Link>
+        <Link href="/" style={{ color: '#88a693', textDecoration: 'none' }}>
+          Inicio
+        </Link>
       </footer>
     </div>
   )

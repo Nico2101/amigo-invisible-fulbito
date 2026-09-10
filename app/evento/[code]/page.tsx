@@ -8,13 +8,8 @@ import {
   generateGroupWhatsAppLink,
   generateInviteWhatsAppLink,
 } from '@/lib/notifications'
-
-interface LocalUser {
-  id: string
-  name: string
-  email: string
-  phone: string
-}
+import { AuthUser, getStoredUser, clearStoredUser } from '@/lib/authClient'
+import { AuthCard } from '@/components/AuthCard'
 
 interface EventRow {
   id: string
@@ -40,18 +35,6 @@ interface MemberRow {
   has_preferences?: boolean
 }
 
-const USER_SESSION_KEY = 'amigo-invisible.user-session.v5'
-
-function getOrCreateUserId(): string {
-  if (typeof window === 'undefined') return ''
-  let id = localStorage.getItem('amigo_user_id')
-  if (!id) {
-    id = crypto.randomUUID()
-    localStorage.setItem('amigo_user_id', id)
-  }
-  return id
-}
-
 async function api<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     headers: { 'Content-Type': 'application/json' },
@@ -70,19 +53,14 @@ export default function EventPage() {
   const rawCode = (params?.code as string) || ''
   const code = rawCode.trim().toUpperCase()
 
-  const [currentUser, setCurrentUser] = useState<LocalUser | null>(null)
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null)
   const [event, setEvent] = useState<EventRow | null>(null)
   const [members, setMembers] = useState<MemberRow[]>([])
   const [progress, setProgress] = useState({ total: 0, completed: 0, status: 'open' as EventRow['status'] })
 
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
-  const [screen, setScreen] = useState<'loading' | 'join' | 'prefs' | 'room'>('loading')
-
-  // Form states for join
-  const [name, setName] = useState('')
-  const [email, setEmail] = useState('')
-  const [phone, setPhone] = useState('')
+  const [screen, setScreen] = useState<'loading' | 'auth' | 'join' | 'prefs' | 'room'>('loading')
 
   // Form states for prefs
   const [prefs, setPrefs] = useState(['', '', ''])
@@ -111,27 +89,6 @@ export default function EventPage() {
     return () => clearTimeout(timer)
   }, [message])
 
-  // Cargar sesión del usuario desde localStorage
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem(USER_SESSION_KEY)
-      if (stored) {
-        const parsed: LocalUser = JSON.parse(stored)
-        setCurrentUser(parsed)
-        setName(parsed.name)
-        setEmail(parsed.email || '')
-        setPhone(parsed.phone || '')
-      }
-    } catch {
-      localStorage.removeItem(USER_SESSION_KEY)
-    }
-  }, [])
-
-  const saveUserSession = (user: LocalUser) => {
-    setCurrentUser(user)
-    localStorage.setItem(USER_SESSION_KEY, JSON.stringify(user))
-  }
-
   // Cargar información de miembros y progreso
   const refreshMembers = useCallback(async (eventId: string) => {
     try {
@@ -151,6 +108,44 @@ export default function EventPage() {
     }
   }, [])
 
+  // Evaluar estado del usuario en el evento
+  const evaluateUserInEvent = useCallback(
+    async (user: AuthUser, ev: EventRow, currentMembers: MemberRow[]) => {
+      const isMember = currentMembers.some(m => m.user_id === user.id)
+
+      if (isMember) {
+        // Consultar preferencias del usuario
+        try {
+          const myPrefs = await api<string[]>(`/api/events/prefs?event_id=${ev.id}&user_id=${user.id}`)
+          const loadedPrefs = ['', '', '']
+          if (myPrefs && myPrefs.length > 0) {
+            myPrefs.forEach((p, i) => {
+              if (i < 3) loadedPrefs[i] = p
+            })
+          }
+          setPrefs(loadedPrefs)
+
+          const validPrefsCount = loadedPrefs.filter(Boolean).length
+          const requiredCount = ev.preference_count || 3
+
+          if (validPrefsCount >= requiredCount) {
+            // Ya cargó todas sus camisetas no deseadas -> VA DIRECTO A LA SALA
+            setScreen('room')
+          } else {
+            // Le faltan completar sus preferencias
+            setScreen('prefs')
+          }
+        } catch {
+          setScreen('prefs')
+        }
+      } else {
+        // Está logueado pero aún no se unió a este evento
+        setScreen('join')
+      }
+    },
+    []
+  )
+
   // Inicializar y cargar el evento
   const loadEvent = useCallback(async () => {
     if (!code) return
@@ -168,47 +163,22 @@ export default function EventPage() {
       const membersData = await refreshMembers(ev.id)
       const currentMembers = membersData?.members || []
 
-      // Verificar si el usuario actual ya es miembro
-      const storedSession = localStorage.getItem(USER_SESSION_KEY)
-      let activeUser: LocalUser | null = null
-      if (storedSession) {
-        try { activeUser = JSON.parse(storedSession) } catch {}
-      }
-
+      // Verificar si hay sesión activa en este dispositivo
+      const activeUser = getStoredUser()
       if (activeUser) {
-        const member = currentMembers.find(m => m.user_id === activeUser?.id)
-        if (member) {
-          // Consultar preferencias del usuario
-          try {
-            const myPrefs = await api<string[]>(`/api/events/prefs?event_id=${ev.id}&user_id=${activeUser.id}`)
-            if (myPrefs && myPrefs.length > 0) {
-              const loadedPrefs = ['', '', '']
-              myPrefs.forEach((p, i) => { if (i < 3) loadedPrefs[i] = p })
-              setPrefs(loadedPrefs)
-              if (loadedPrefs.filter(Boolean).length >= 3) {
-                setScreen('room')
-              } else {
-                setScreen('prefs')
-              }
-            } else {
-              setScreen('prefs')
-            }
-          } catch {
-            setScreen('prefs')
-          }
-        } else {
-          // No es miembro de este evento todavía
-          setScreen('join')
-        }
+        setCurrentUser(activeUser)
+        await evaluateUserInEvent(activeUser, ev, currentMembers)
       } else {
-        setScreen('join')
+        // No está logueado -> Mostrar pantalla de autenticación
+        setCurrentUser(null)
+        setScreen('auth')
       }
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Error al buscar el evento', 'error')
     } finally {
       setLoading(false)
     }
-  }, [code, refreshMembers])
+  }, [code, refreshMembers, evaluateUserInEvent])
 
   useEffect(() => {
     loadEvent()
@@ -223,23 +193,42 @@ export default function EventPage() {
     return () => clearInterval(interval)
   }, [screen, event?.id, refreshMembers])
 
-  // Unirse al evento
+  // Manejo cuando el usuario inicia sesión o se registra con éxito en AuthCard
+  const handleAuthSuccess = async (user: AuthUser) => {
+    setCurrentUser(user)
+    notify(`¡Sesión iniciada como ${user.display_name}!`, 'success')
+
+    if (event) {
+      const membersData = await refreshMembers(event.id)
+      const currentMembers = membersData?.members || []
+      await evaluateUserInEvent(user, event, currentMembers)
+    }
+  }
+
+  // Cerrar sesión
+  const handleLogout = () => {
+    clearStoredUser()
+    setCurrentUser(null)
+    setScreen('auth')
+    notify('Sesión cerrada.', 'info')
+  }
+
+  // Unirse al evento con la cuenta actual
   async function handleJoin() {
-    const cleanName = name.trim()
-    if (!cleanName) {
-      notify('Por favor, ingresá tu nombre.', 'error')
+    if (!currentUser || !event) {
+      setScreen('auth')
       return
     }
 
     setBusy(true)
-    const userId = currentUser?.id || getOrCreateUserId()
-    const userObj: LocalUser = { id: userId, name: cleanName, email: email.trim(), phone: phone.trim() }
-    saveUserSession(userObj)
-
     try {
       const data = await api<{ event: EventRow; members: MemberRow[]; myPrefs: string[] }>('/api/events/join', {
         method: 'POST',
-        body: JSON.stringify({ code, user_id: userId, display_name: cleanName }),
+        body: JSON.stringify({
+          code,
+          user_id: currentUser.id,
+          display_name: currentUser.display_name,
+        }),
       })
 
       setEvent(data.event)
@@ -248,18 +237,23 @@ export default function EventPage() {
 
       const nextPrefs = ['', '', '']
       if (data.myPrefs && data.myPrefs.length > 0) {
-        data.myPrefs.forEach((val: string, i: number) => { if (i < 3) nextPrefs[i] = val })
+        data.myPrefs.forEach((val: string, i: number) => {
+          if (i < 3) nextPrefs[i] = val
+        })
       }
       setPrefs(nextPrefs)
 
+      const validCount = nextPrefs.filter(Boolean).length
+      const required = data.event.preference_count || 3
+
       if (data.event.status === 'drawn') {
         router.push(`/regalo?code=${code}`)
-      } else if (nextPrefs.filter(Boolean).length >= 3) {
+      } else if (validCount >= required) {
         setScreen('room')
         notify('¡Ya estás en la sala!', 'success')
       } else {
         setScreen('prefs')
-        notify('¡Te sumaste al evento! Ahora cargá tus 3 camisetas no deseadas.', 'success')
+        notify('¡Te sumaste al evento! Ahora cargá tus camisetas no deseadas.', 'success')
       }
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Error al unirte al evento', 'error')
@@ -333,7 +327,7 @@ export default function EventPage() {
         body: JSON.stringify({ event_id: event.id }),
       })
 
-      setEvent(prev => prev ? { ...prev, status: 'drawn' } : null)
+      setEvent(prev => (prev ? { ...prev, status: 'drawn' } : null))
       setProgress(prev => ({ ...prev, status: 'drawn' }))
       notify('🎉 ¡Sorteo realizado con éxito!', 'success')
       router.push(`/regalo?code=${code}`)
@@ -393,8 +387,12 @@ export default function EventPage() {
         </header>
         <main className="page" style={{ textAlign: 'center', padding: '80px 20px' }}>
           <h2>⚠️ Evento no encontrado</h2>
-          <p style={{ color: '#8aa494', marginBottom: 24 }}>No encontramos ningún sorteo con el código <strong>{code}</strong>.</p>
-          <Link href="/" className="button primary large">← Volver al inicio</Link>
+          <p style={{ color: '#8aa494', marginBottom: 24 }}>
+            No encontramos ningún sorteo con el código <strong>{code}</strong>.
+          </p>
+          <Link href="/" className="button primary large">
+            ← Volver al inicio
+          </Link>
         </main>
       </div>
     )
@@ -412,9 +410,19 @@ export default function EventPage() {
         </Link>
         <div className="topbar-right">
           {currentUser ? (
-            <span className="user-chip">👤 {currentUser.name}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span className="user-chip">👤 {currentUser.display_name}</span>
+              <button
+                onClick={handleLogout}
+                className="button ghost small-button"
+                style={{ padding: '5px 10px', fontSize: 12 }}
+                title="Cerrar sesión"
+              >
+                Salir
+              </button>
+            </div>
           ) : (
-            <span className="user-chip" style={{ opacity: 0.7 }}>🔓 Acceso directo</span>
+            <span className="user-chip" style={{ opacity: 0.8 }}>🔒 Requiere cuenta</span>
           )}
         </div>
       </header>
@@ -426,12 +434,22 @@ export default function EventPage() {
             <strong>⚽ {event.name} (Código: {event.code})</strong>
             <p>
               💰 Presupuesto: ${event.budget_min.toLocaleString('es-AR')} – ${event.budget_max.toLocaleString('es-AR')}
-              {event.event_date ? ` · 📅 Entrega: ${new Date(`${event.event_date}T12:00:00`).toLocaleDateString('es-AR')}` : ''}
+              {event.event_date
+                ? ` · 📅 Entrega: ${new Date(`${event.event_date}T12:00:00`).toLocaleDateString('es-AR')}`
+                : ''}
             </p>
           </div>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
             <a
-              href={generateInviteWhatsAppLink(event.name, event.code, siteUrl, event.budget_min, event.budget_max, event.event_date, event.rules)}
+              href={generateInviteWhatsAppLink(
+                event.name,
+                event.code,
+                siteUrl,
+                event.budget_min,
+                event.budget_max,
+                event.event_date,
+                event.rules
+              )}
               target="_blank"
               rel="noopener noreferrer"
               className="button whatsapp"
@@ -444,63 +462,65 @@ export default function EventPage() {
           </div>
         </section>
 
-        {/* PANTALLA: UNIRSE */}
-        {screen === 'join' && (
+        {/* PANTALLA: AUTENTICACIÓN PREVIA OBLIGATORIA */}
+        {screen === 'auth' && (
+          <section className="content-layout narrow">
+            <div style={{ textAlign: 'center', marginBottom: 20 }}>
+              <div className="eyebrow" style={{ color: '#22c55e' }}>Acceso al evento</div>
+              <h2 style={{ margin: '6px 0', fontSize: 24 }}>{event.name}</h2>
+              <p style={{ color: '#8aa494', fontSize: 14 }}>
+                Para entrar y guardar tus preferencias de camisetas en todos tus dispositivos, ingresá con tu cuenta.
+              </p>
+            </div>
+
+            <AuthCard
+              onSuccess={handleAuthSuccess}
+              title="Ingresá a la Cancha"
+              subtitle="Iniciá sesión o registrate con tu usuario y contraseña (sin validaciones raras)."
+            />
+          </section>
+        )}
+
+        {/* PANTALLA: UNIRSE (USUARIO LOGUEADO PERO AÚN NO MIEMBRO) */}
+        {screen === 'join' && currentUser && (
           <section className="content-layout narrow">
             <div className="form-card">
               <div className="step-badge">Sumarse al plantel</div>
               <div className="eyebrow">Código de sala: {event.code}</div>
               <h2>{event.name}</h2>
-              <p className="lead">Ingresá tu nombre para anotarte en este Amigo Invisible.</p>
+              <p className="lead">
+                ¡Hola <strong>{currentUser.display_name}</strong>! Anotate en este Amigo Invisible con un solo clic.
+              </p>
 
-              <div className="auth-panel" style={{ marginTop: 16 }}>
-                <label>Tu nombre de jugador *
-                  <input
-                    value={name}
-                    onChange={e => setName(e.target.value)}
-                    placeholder="Ej. Leo Messi, Nico Abritta"
-                    autoCapitalize="words"
-                    autoComplete="name"
-                    autoFocus
-                  />
-                </label>
-                <div className="form-grid">
-                  <label>Email (opcional)
-                    <input
-                      type="email"
-                      inputMode="email"
-                      autoComplete="email"
-                      value={email}
-                      onChange={e => setEmail(e.target.value)}
-                      placeholder="vos@email.com"
-                    />
-                  </label>
-                  <label>WhatsApp (opcional)
-                    <input
-                      type="tel"
-                      inputMode="tel"
-                      autoComplete="tel"
-                      value={phone}
-                      onChange={e => setPhone(e.target.value)}
-                      placeholder="+54 9 11..."
-                    />
-                  </label>
+              <div className="form-grid" style={{ marginTop: 16 }}>
+                <div className="readonly-card">
+                  <span>Tu usuario</span>
+                  <strong>@{currentUser.username}</strong>
+                </div>
+                <div className="readonly-card">
+                  <span>Tu nombre de jugador</span>
+                  <strong>{currentUser.display_name}</strong>
                 </div>
               </div>
 
-              <div className="form-grid" style={{ marginTop: 16 }}>
+              <div className="form-grid" style={{ marginTop: 12 }}>
                 <div className="readonly-card">
                   <span>Presupuesto</span>
                   <strong>${event.budget_min.toLocaleString('es-AR')} – ${event.budget_max.toLocaleString('es-AR')}</strong>
                 </div>
                 <div className="readonly-card">
-                  <span>Regla</span>
+                  <span>Regla del organizador</span>
                   <strong>{event.rules || 'Libre'}</strong>
                 </div>
               </div>
 
-              <button className="button primary large full" onClick={handleJoin} disabled={busy} style={{ marginTop: 20 }}>
-                {busy ? 'Sumándote…' : 'Anotarme en el evento →'}
+              <button
+                className="button primary large full"
+                onClick={handleJoin}
+                disabled={busy}
+                style={{ marginTop: 24 }}
+              >
+                {busy ? 'Sumándote…' : `⚽ Sumarme como ${currentUser.display_name} →`}
               </button>
             </div>
           </section>
@@ -513,7 +533,10 @@ export default function EventPage() {
               <div className="step-badge">Paso obligatorio</div>
               <div className="eyebrow">{event.name}</div>
               <h2>Camisetas No Deseadas 🚫</h2>
-              <p className="lead">Cargá las 3 camisetas o selecciones que NO querés recibir para que tu amigo invisible no se equivoque.</p>
+              <p className="lead">
+                Cargá las 3 camisetas o selecciones que NO querés recibir para que tu amigo invisible no se equivoque.
+                Se guardarán automáticamente en tu cuenta.
+              </p>
 
               {prefs.map((val, idx) => (
                 <div key={idx} className="pref-field">
@@ -526,7 +549,12 @@ export default function EventPage() {
                 </div>
               ))}
 
-              <button className="button primary large full" onClick={handleSavePrefs} disabled={busy} style={{ marginTop: 20 }}>
+              <button
+                className="button primary large full"
+                onClick={handleSavePrefs}
+                disabled={busy}
+                style={{ marginTop: 20 }}
+              >
                 {busy ? 'Guardando…' : 'Guardar y entrar a la sala →'}
               </button>
             </div>
@@ -542,16 +570,22 @@ export default function EventPage() {
                 <h2>{event.name}</h2>
                 <p>
                   💰 Presupuesto: <strong>${event.budget_min.toLocaleString('es-AR')} – ${event.budget_max.toLocaleString('es-AR')}</strong>
-                  {event.event_date ? ` · 📅 Entrega: ${new Date(`${event.event_date}T12:00:00`).toLocaleDateString('es-AR')}` : ' · 📅 Fecha por confirmar'}
+                  {event.event_date
+                    ? ` · 📅 Entrega: ${new Date(`${event.event_date}T12:00:00`).toLocaleDateString('es-AR')}`
+                    : ' · 📅 Fecha por confirmar'}
                 </p>
               </div>
               <div className="code-card">
                 <span>Código de sala</span>
                 <strong>{event.code}</strong>
                 <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-                  <button className="button ghost small-button" onClick={copyLink}>Copiar link</button>
+                  <button className="button ghost small-button" onClick={copyLink}>
+                    Copiar link
+                  </button>
                   {isOrganizer && event.status !== 'drawn' && (
-                    <button className="button secondary small-button" onClick={() => setShowConfigModal(true)}>⚙️ Configurar</button>
+                    <button className="button secondary small-button" onClick={() => setShowConfigModal(true)}>
+                      ⚙️ Configurar
+                    </button>
                   )}
                 </div>
               </div>
@@ -559,23 +593,22 @@ export default function EventPage() {
 
             {/* Aviso si ya fue sorteado */}
             {event.status === 'drawn' && (
-              <div style={{
-                background: 'linear-gradient(135deg, #10331e, #07190e)',
-                border: '1px solid #22c55e',
-                borderRadius: 20,
-                padding: '24px',
-                marginBottom: 24,
-                textAlign: 'center',
-              }}>
+              <div
+                style={{
+                  background: 'linear-gradient(135deg, #10331e, #07190e)',
+                  border: '1px solid #22c55e',
+                  borderRadius: 20,
+                  padding: '24px',
+                  marginBottom: 24,
+                  textAlign: 'center',
+                }}
+              >
                 <span style={{ fontSize: 36 }}>🎉</span>
                 <h3 style={{ fontSize: 24, margin: '8px 0', color: '#e8fbf0' }}>¡El sorteo ya fue realizado!</h3>
                 <p style={{ color: '#98cbb0', marginBottom: 16 }}>
                   Cada jugador ya tiene asignado a su amigo invisible en secreto.
                 </p>
-                <button
-                  className="button primary large"
-                  onClick={() => router.push(`/regalo?code=${code}`)}
-                >
+                <button className="button primary large" onClick={() => router.push(`/regalo?code=${code}`)}>
                   🎁 Ver mi amigo invisible asignado →
                 </button>
               </div>
@@ -586,10 +619,16 @@ export default function EventPage() {
                 <div className="section-title">
                   <div>
                     <div className="eyebrow">Plantel de participantes</div>
-                    <h3>{members.length} Jugador{members.length === 1 ? '' : 'es'}</h3>
+                    <h3>
+                      {members.length} Jugador{members.length === 1 ? '' : 'es'}
+                    </h3>
                   </div>
                   <span className={`status-chip ${readyToDraw ? 'ready' : ''}`}>
-                    {event.status === 'drawn' ? 'Sorteo realizado' : readyToDraw ? '¡Listos para sortear!' : `${progress.completed}/${progress.total} listos`}
+                    {event.status === 'drawn'
+                      ? 'Sorteo realizado'
+                      : readyToDraw
+                      ? '¡Listos para sortear!'
+                      : `${progress.completed}/${progress.total} listos`}
                   </span>
                 </div>
 
@@ -598,7 +637,9 @@ export default function EventPage() {
                     <div className="member-row" key={member.user_id}>
                       <div className="avatar">{member.display_name.slice(0, 1).toUpperCase()}</div>
                       <div>
-                        <strong>{member.display_name}</strong>
+                        <strong>
+                          {member.display_name} {currentUser?.id === member.user_id ? '(Vos)' : ''}
+                        </strong>
                         <span>{member.role === 'organizer' ? '⭐ Organizador' : '⚽ Jugador'}</span>
                       </div>
                       <span className={`pref-badge ${member.has_preferences ? 'complete' : 'pending'}`}>
@@ -613,7 +654,9 @@ export default function EventPage() {
                   <div className="draw-panel" style={{ marginTop: 24 }}>
                     <div className="draw-panel-info">
                       <strong>Panel del Organizador</strong>
-                      <p>{progress.completed} de {progress.total} participantes completaron sus no deseados.</p>
+                      <p>
+                        {progress.completed} de {progress.total} participantes completaron sus no deseados.
+                      </p>
                     </div>
 
                     {event.status === 'open' ? (
@@ -648,6 +691,7 @@ export default function EventPage() {
                     <p style={{ fontSize: 13, color: '#88aa94', margin: '4px 0 12px' }}>
                       Enviá el aviso al grupo o el mensaje privado a cada jugador:
                     </p>
+
                     <a
                       href={generateGroupWhatsAppLink(event.name, event.code, siteUrl)}
                       target="_blank"
@@ -704,7 +748,9 @@ export default function EventPage() {
                 <h3>Sorteo 100% secreto.</h3>
                 <p>Nadie sabe a quién le regala el resto. Vos solo verás la camiseta y los no deseados de quien te toque.</p>
                 <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid #1a3824' }}>
-                  <span style={{ fontSize: 12, color: '#688e76', display: 'block', marginBottom: 6 }}>LINK DIRECTO A ESTA SALA:</span>
+                  <span style={{ fontSize: 12, color: '#688e76', display: 'block', marginBottom: 6 }}>
+                    LINK DIRECTO A ESTA SALA:
+                  </span>
                   <code style={{ fontSize: 12, color: '#90f0b4', wordBreak: 'break-all' }}>
                     {siteUrl}/evento/{event.code}
                   </code>
@@ -721,9 +767,12 @@ export default function EventPage() {
           <div className="modal-panel" onClick={e => e.stopPropagation()}>
             <div className="eyebrow">Ajustes del Organizador</div>
             <h2>Configurar Evento</h2>
-            <p className="lead" style={{ marginBottom: 20 }}>Modificá el presupuesto, fecha o reglas de este sorteo.</p>
+            <p className="lead" style={{ marginBottom: 20 }}>
+              Modificá el presupuesto, fecha o reglas de este sorteo.
+            </p>
 
-            <label>Nombre del evento
+            <label>
+              Nombre del evento
               <input value={editName} onChange={e => setEditName(e.target.value)} />
             </label>
 
@@ -758,21 +807,30 @@ export default function EventPage() {
                 <button
                   type="button"
                   className="preset-btn"
-                  onClick={() => { setEditBudgetMin(30000); setEditBudgetMax(60000) }}
+                  onClick={() => {
+                    setEditBudgetMin(30000)
+                    setEditBudgetMax(60000)
+                  }}
                 >
                   $30k – $60k
                 </button>
                 <button
                   type="button"
                   className="preset-btn"
-                  onClick={() => { setEditBudgetMin(50000); setEditBudgetMax(100000) }}
+                  onClick={() => {
+                    setEditBudgetMin(50000)
+                    setEditBudgetMax(100000)
+                  }}
                 >
                   $50k – $100k
                 </button>
                 <button
                   type="button"
                   className="preset-btn"
-                  onClick={() => { setEditBudgetMin(80000); setEditBudgetMax(150000) }}
+                  onClick={() => {
+                    setEditBudgetMin(80000)
+                    setEditBudgetMax(150000)
+                  }}
                 >
                   $80k – $150k
                 </button>
@@ -780,17 +838,15 @@ export default function EventPage() {
             </div>
 
             <div style={{ marginTop: 14 }}>
-              <label>Fecha de entrega / partido
-                <input
-                  type="date"
-                  value={editDate}
-                  onChange={e => setEditDate(e.target.value)}
-                />
+              <label>
+                Fecha de entrega / partido
+                <input type="date" value={editDate} onChange={e => setEditDate(e.target.value)} />
               </label>
             </div>
 
             <div style={{ marginTop: 14 }}>
-              <label>Reglas o condiciones especiales
+              <label>
+                Reglas o condiciones especiales
                 <input
                   value={editRules}
                   onChange={e => setEditRules(e.target.value)}
@@ -816,13 +872,17 @@ export default function EventPage() {
         <div className={`toast ${messageType}`} role="status">
           <span>{messageType === 'error' ? '⚠️' : messageType === 'success' ? '✓' : 'ℹ️'}</span>
           <p>{message}</p>
-          <button onClick={() => setMessage('')} aria-label="Cerrar">×</button>
+          <button onClick={() => setMessage('')} aria-label="Cerrar">
+            ×
+          </button>
         </div>
       )}
 
       <footer className="footer">
         <span>⚽ Amigo Invisible · Fulbito</span>
-        <Link href="/" style={{ color: '#88a693', textDecoration: 'none' }}>Volver al inicio</Link>
+        <Link href="/" style={{ color: '#88a693', textDecoration: 'none' }}>
+          Volver al inicio
+        </Link>
       </footer>
     </div>
   )
