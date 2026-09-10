@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { AuthUser, getStoredUser, clearStoredUser } from '@/lib/authClient'
 import { AuthCard } from '@/components/AuthCard'
+import { DatePickerField } from '@/components/DatePickerField'
 
 interface UserEventItem {
   event: {
@@ -350,14 +351,18 @@ export default function Home() {
                 </div>
               )}
 
-              <div className="form-grid">
+              <div style={{ marginBottom: 14 }}>
                 <label>Nombre del evento *
                   <input value={eventName} onChange={e => setEventName(e.target.value)} />
                 </label>
-                <label>Fecha de entrega / partido
-                  <input type="date" value={eventDate} onChange={e => setEventDate(e.target.value)} />
-                </label>
               </div>
+
+              <DatePickerField
+                label="Fecha de entrega / partido"
+                value={eventDate}
+                onChange={setEventDate}
+                helperText="Elegí la fecha desplegando el calendario o con los botones rápidos."
+              />
 
               {/* Configuración expandida del organizador */}
               <div style={{ marginTop: 20, padding: 18, background: '#0a1e12', border: '1px solid #1a4227', borderRadius: 18 }}>

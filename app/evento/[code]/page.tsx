@@ -8,8 +8,9 @@ import {
   generateGroupWhatsAppLink,
   generateInviteWhatsAppLink,
 } from '@/lib/notifications'
-import { AuthUser, getStoredUser, clearStoredUser } from '@/lib/authClient'
+import { AuthUser, getStoredUser, saveStoredUser, clearStoredUser } from '@/lib/authClient'
 import { AuthCard } from '@/components/AuthCard'
+import { DatePickerField } from '@/components/DatePickerField'
 
 interface EventRow {
   id: string
@@ -122,6 +123,10 @@ export default function EventPage() {
             myPrefs.forEach((p, i) => {
               if (i < 3) loadedPrefs[i] = p
             })
+          } else if (user.preferences && user.preferences.length >= 3) {
+            user.preferences.forEach((p, i) => {
+              if (i < 3) loadedPrefs[i] = p
+            })
           }
           setPrefs(loadedPrefs)
 
@@ -136,7 +141,16 @@ export default function EventPage() {
             setScreen('prefs')
           }
         } catch {
-          setScreen('prefs')
+          if (user.preferences && user.preferences.length >= 3) {
+            const loadedPrefs = ['', '', '']
+            user.preferences.forEach((p, i) => {
+              if (i < 3) loadedPrefs[i] = p
+            })
+            setPrefs(loadedPrefs)
+            setScreen('room')
+          } else {
+            setScreen('prefs')
+          }
         }
       } else {
         // Está logueado pero aún no se unió a este evento
@@ -240,6 +254,10 @@ export default function EventPage() {
         data.myPrefs.forEach((val: string, i: number) => {
           if (i < 3) nextPrefs[i] = val
         })
+      } else if (currentUser.preferences && currentUser.preferences.length >= 3) {
+        currentUser.preferences.forEach((val: string, i: number) => {
+          if (i < 3) nextPrefs[i] = val
+        })
       }
       setPrefs(nextPrefs)
 
@@ -277,6 +295,12 @@ export default function EventPage() {
         method: 'POST',
         body: JSON.stringify({ event_id: event.id, user_id: currentUser.id, preferences: cleaned }),
       })
+
+      // Guardar también en la sesión local
+      const updatedUser: AuthUser = { ...currentUser, preferences: cleaned }
+      setCurrentUser(updatedUser)
+      saveStoredUser(updatedUser)
+
       await refreshMembers(event.id)
       setScreen('room')
       notify('¡Preferencias guardadas exitosamente!', 'success')
@@ -530,12 +554,17 @@ export default function EventPage() {
         {screen === 'prefs' && (
           <section className="content-layout narrow">
             <div className="form-card">
+              {prefs.filter(Boolean).length >= 3 && (
+                <button className="back-link" onClick={() => setScreen('room')}>
+                  ← Volver a la sala
+                </button>
+              )}
               <div className="step-badge">Paso obligatorio</div>
               <div className="eyebrow">{event.name}</div>
               <h2>Camisetas No Deseadas 🚫</h2>
               <p className="lead">
                 Cargá las 3 camisetas o selecciones que NO querés recibir para que tu amigo invisible no se equivoque.
-                Se guardarán automáticamente en tu cuenta.
+                Se recordarán en tu cuenta para que no tengas que volver a cargarlas en futuros eventos.
               </p>
 
               {prefs.map((val, idx) => (
@@ -838,10 +867,12 @@ export default function EventPage() {
             </div>
 
             <div style={{ marginTop: 14 }}>
-              <label>
-                Fecha de entrega / partido
-                <input type="date" value={editDate} onChange={e => setEditDate(e.target.value)} />
-              </label>
+              <DatePickerField
+                label="Fecha de entrega / partido"
+                value={editDate}
+                onChange={setEditDate}
+                helperText="Elegí la fecha desplegando el calendario o con los botones rápidos."
+              />
             </div>
 
             <div style={{ marginTop: 14 }}>

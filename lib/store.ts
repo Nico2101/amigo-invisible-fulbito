@@ -44,6 +44,7 @@ export interface StoreUser {
   username: string
   password: string
   display_name: string
+  preferences?: string[]
   created_at: string
 }
 
@@ -304,6 +305,23 @@ export async function addMember(member: StoreMember): Promise<void> {
     list.push(member)
   }
   data.membersByEvent[member.event_id] = list
+
+  // Si el usuario ya tiene preferencias registradas en su cuenta, aplicarlas automáticamente al evento
+  const user = Object.values(data.users || {}).find(u => u.id === member.user_id)
+  if (user && user.preferences && user.preferences.length >= 3) {
+    let eventPrefs = data.prefsByEvent[member.event_id] || []
+    const hasEventPrefs = eventPrefs.some(p => p.user_id === member.user_id)
+    if (!hasEventPrefs) {
+      user.preferences.forEach((val, idx) => {
+        if (val.trim()) {
+          eventPrefs.push({ event_id: member.event_id, user_id: member.user_id, position: idx + 1, value: val.trim() })
+        }
+      })
+      data.prefsByEvent[member.event_id] = eventPrefs
+      console.log(`[Store] ✅ Preferencias heredadas automáticamente para "${member.display_name}" en evento ${member.event_id}`)
+    }
+  }
+
   await saveData(data)
   console.log(`[Store] Miembro "${member.display_name}" guardado en evento ${member.event_id}`)
 }
@@ -317,23 +335,56 @@ export async function savePreferences(eventId: string, userId: string, values: s
   const data = await loadData(true)
   let list = data.prefsByEvent[eventId] || []
   list = list.filter(p => p.user_id !== userId)
+  const cleaned: string[] = []
   values.forEach((value, index) => {
     if (value.trim()) {
+      cleaned.push(value.trim())
       list.push({ event_id: eventId, user_id: userId, position: index + 1, value: value.trim() })
     }
   })
   data.prefsByEvent[eventId] = list
+
+  // Guardar también en la cuenta del usuario para que se recuerden en todos sus eventos
+  const user = Object.values(data.users || {}).find(u => u.id === userId)
+  if (user && cleaned.length >= 3) {
+    user.preferences = cleaned
+    data.users[user.username] = user
+  }
+
   await saveData(data)
-  console.log(`[Store] Preferencias guardadas para user=${userId} en evento=${eventId}`)
+  console.log(`[Store] Preferencias guardadas para user=${userId} en evento=${eventId} y en su cuenta:`, cleaned)
 }
 
 export async function getPreferences(eventId: string, userId: string): Promise<string[]> {
   const data = await loadData(true)
   const list = data.prefsByEvent[eventId] || []
-  return list
+  const currentPrefs = list
     .filter(p => p.user_id === userId)
     .sort((a, b) => a.position - b.position)
     .map(p => p.value)
+
+  if (currentPrefs.length >= 3) {
+    return currentPrefs
+  }
+
+  // Si no hay preferencias en este evento, consultar si el usuario tiene preferencias guardadas en su cuenta
+  const user = Object.values(data.users || {}).find(u => u.id === userId)
+  if (user && user.preferences && user.preferences.length >= 3) {
+    // Heredar automáticamente a este evento
+    let eventList = data.prefsByEvent[eventId] || []
+    eventList = eventList.filter(p => p.user_id !== userId)
+    user.preferences.forEach((val, idx) => {
+      if (val.trim()) {
+        eventList.push({ event_id: eventId, user_id: userId, position: idx + 1, value: val.trim() })
+      }
+    })
+    data.prefsByEvent[eventId] = eventList
+    await saveData(data)
+    console.log(`[Store] ✅ Preferencias heredadas de la cuenta para user=${userId} en evento=${eventId}:`, user.preferences)
+    return user.preferences
+  }
+
+  return currentPrefs
 }
 
 export async function getAllPreferences(eventId: string): Promise<StorePreference[]> {

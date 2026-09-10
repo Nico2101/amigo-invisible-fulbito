@@ -1079,3 +1079,42 @@ button, .button {
     gap: 8px;
   }
 }
+
+/* Date Picker styling */
+input[type="date"] {
+  color-scheme: dark;
+  cursor: pointer;
+  position: relative;
+  font-family: inherit;
+  font-size: 15px;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.85);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+  transition: all 0.15s ease;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator:hover {
+  filter: invert(1);
+  background: rgba(34, 197, 94, 0.2);
+}
+
+.date-input-wrapper {
+  transition: all 0.15s ease;
+}
+
+.date-input-wrapper:hover input[type="date"] {
+  border-color: #2e693f;
+}
+
+.calendar-toggle-btn {
+  transition: transform 0.15s cubic-bezier(0.16, 1, 0.3, 1), background 0.15s ease;
+}
+
+.calendar-toggle-btn:hover {
+  transform: translateY(-50%) scale(1.15) !important;
+  background: rgba(34, 197, 94, 0.15) !important;
+}

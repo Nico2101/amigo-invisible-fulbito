@@ -17,6 +17,7 @@ export async function POST(req: NextRequest) {
         id: user.id,
         username: user.username,
         display_name: user.display_name,
+        preferences: user.preferences || [],
       },
     })
   } catch (err) {

@@ -4,6 +4,7 @@ export interface AuthUser {
   id: string
   username: string
   display_name: string
+  preferences?: string[]
 }
 
 const AUTH_STORAGE_KEY = 'amigo_user_account.v2'

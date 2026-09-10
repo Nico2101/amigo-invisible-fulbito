@@ -1,6 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server'
 import * as store from '@/lib/store'
 
+// GET /api/events/prefs?event_id=xxx&user_id=yyy — Obtener preferencias de un usuario
+export async function GET(req: NextRequest) {
+  try {
+    const event_id = req.nextUrl.searchParams.get('event_id')
+    const user_id = req.nextUrl.searchParams.get('user_id')
+
+    if (!event_id || !user_id) {
+      return NextResponse.json({ error: 'Faltan event_id y user_id' }, { status: 400 })
+    }
+
+    const prefs = await store.getPreferences(event_id, user_id)
+    return NextResponse.json(prefs)
+  } catch (err) {
+    console.error('[API /api/events/prefs GET] ❌ Error:', err)
+    return NextResponse.json({ error: String(err) }, { status: 500 })
+  }
+}
+
 // POST /api/events/prefs — Guardar preferencias
 export async function POST(req: NextRequest) {
   try {
@@ -19,7 +37,7 @@ export async function POST(req: NextRequest) {
     console.log(`[API /api/events/prefs] ✅ Preferencias guardadas. Progreso: ${progress.completed}/${progress.total}`)
     return NextResponse.json({ success: true, progress })
   } catch (err) {
-    console.error('[API /api/events/prefs] ❌ Error:', err)
+    console.error('[API /api/events/prefs POST] ❌ Error:', err)
     return NextResponse.json({ error: String(err) }, { status: 500 })
   }
 }
