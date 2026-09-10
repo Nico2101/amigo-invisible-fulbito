@@ -6,6 +6,7 @@ import Link from 'next/link'
 import { AuthUser, getStoredUser, clearStoredUser } from '@/lib/authClient'
 import { AuthCard } from '@/components/AuthCard'
 import { DatePickerField } from '@/components/DatePickerField'
+import { DeleteEventModal } from '@/components/DeleteEventModal'
 
 interface UserEventItem {
   event: {
@@ -58,10 +59,35 @@ export default function Home() {
   const [message, setMessage] = useState('')
   const [messageType, setMessageType] = useState<'info' | 'error' | 'success'>('info')
   const [busy, setBusy] = useState(false)
+  const [eventToDelete, setEventToDelete] = useState<{
+    id: string
+    name: string
+    code: string
+    isFinished: boolean
+  } | null>(null)
 
   const notify = (text: string, type: 'info' | 'error' | 'success' = 'info') => {
     setMessage(text)
     setMessageType(type)
+  }
+
+  // Eliminar evento desde la pantalla de Mis Eventos (solo organizador)
+  async function handleDeleteEventFromHome() {
+    if (!eventToDelete || !currentUser) return
+    setBusy(true)
+    try {
+      await api('/api/events', {
+        method: 'DELETE',
+        body: JSON.stringify({ id: eventToDelete.id, user_id: currentUser.id }),
+      })
+      notify(`Sorteo "${eventToDelete.name}" eliminado correctamente.`, 'success')
+      setEventToDelete(null)
+      await loadUserEvents(currentUser.id)
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Error al eliminar el sorteo', 'error')
+    } finally {
+      setBusy(false)
+    }
   }
 
   useEffect(() => {
@@ -267,14 +293,47 @@ export default function Home() {
                               }}>
                                 {role === 'organizer' ? '⭐ Organizador' : '⚽ Jugador'}
                               </span>
-                              <span style={{
-                                fontSize: 13,
-                                fontWeight: 900,
-                                color: '#fbbf24',
-                                letterSpacing: 2,
-                              }}>
-                                #{ev.code}
-                              </span>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <span style={{
+                                  fontSize: 13,
+                                  fontWeight: 900,
+                                  color: '#fbbf24',
+                                  letterSpacing: 2,
+                                }}>
+                                  #{ev.code}
+                                </span>
+                                {role === 'organizer' && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.preventDefault()
+                                      e.stopPropagation()
+                                      setEventToDelete({
+                                        id: ev.id,
+                                        name: ev.name,
+                                        code: ev.code,
+                                        isFinished: isDrawn,
+                                      })
+                                    }}
+                                    style={{
+                                      background: 'rgba(239, 68, 68, 0.15)',
+                                      border: '1px solid rgba(239, 68, 68, 0.4)',
+                                      borderRadius: 6,
+                                      cursor: 'pointer',
+                                      fontSize: 12,
+                                      padding: '3px 6px',
+                                      color: '#f87171',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      lineHeight: 1,
+                                    }}
+                                    title="Eliminar este sorteo (administrador)"
+                                  >
+                                    🗑️
+                                  </button>
+                                )}
+                              </div>
                             </div>
 
                             <h3 style={{ marginTop: 10 }}>{ev.name}</h3>
@@ -481,6 +540,18 @@ export default function Home() {
           </section>
         )}
       </main>
+
+      {/* MODAL DE ELIMINACIÓN DE EVENTO (ORGANIZADOR) */}
+      <DeleteEventModal
+        isOpen={Boolean(eventToDelete)}
+        eventName={eventToDelete?.name || ''}
+        eventCode={eventToDelete?.code || ''}
+        isFinished={eventToDelete?.isFinished || false}
+        memberCount={0}
+        busy={busy}
+        onConfirm={handleDeleteEventFromHome}
+        onCancel={() => setEventToDelete(null)}
+      />
 
       {/* TOASTS */}
       {message && (

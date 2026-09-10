@@ -11,6 +11,7 @@ import {
 import { AuthUser, getStoredUser, saveStoredUser, clearStoredUser } from '@/lib/authClient'
 import { AuthCard } from '@/components/AuthCard'
 import { DatePickerField } from '@/components/DatePickerField'
+import { DeleteEventModal } from '@/components/DeleteEventModal'
 
 interface EventRow {
   id: string
@@ -74,6 +75,8 @@ export default function EventPage() {
   const [editDate, setEditDate] = useState('')
   const [editRules, setEditRules] = useState('')
   const [editGiftType, setEditGiftType] = useState('Camisetas de fútbol')
+  const [showDeleteModal, setShowDeleteModal] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   // Toasts
   const [message, setMessage] = useState('')
@@ -336,6 +339,25 @@ export default function EventPage() {
       notify(err instanceof Error ? err.message : 'Error al guardar configuración', 'error')
     } finally {
       setBusy(false)
+    }
+  }
+
+  // Eliminar evento (organizador)
+  async function handleDeleteEvent() {
+    if (!event || !currentUser) return
+    setDeleting(true)
+    try {
+      await api('/api/events', {
+        method: 'DELETE',
+        body: JSON.stringify({ id: event.id, user_id: currentUser.id }),
+      })
+      notify('El evento fue eliminado correctamente.', 'success')
+      setShowDeleteModal(false)
+      setShowConfigModal(false)
+      router.push('/')
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Error al eliminar el evento', 'error')
+      setDeleting(false)
     }
   }
 
@@ -611,9 +633,25 @@ export default function EventPage() {
                   <button className="button ghost small-button" onClick={copyLink}>
                     Copiar link
                   </button>
-                  {isOrganizer && event.status !== 'drawn' && (
+                  {isOrganizer && (
                     <button className="button secondary small-button" onClick={() => setShowConfigModal(true)}>
-                      ⚙️ Configurar
+                      ⚙️ {event.status === 'drawn' ? 'Ajustes' : 'Configurar'}
+                    </button>
+                  )}
+                  {isOrganizer && (
+                    <button
+                      type="button"
+                      className="button small-button"
+                      onClick={() => setShowDeleteModal(true)}
+                      style={{
+                        background: '#2d0f0c',
+                        border: '1px solid #7f1d1d',
+                        color: '#f87171',
+                        padding: '8px 10px',
+                      }}
+                      title="Eliminar este evento"
+                    >
+                      🗑️
                     </button>
                   )}
                 </div>
@@ -886,17 +924,75 @@ export default function EventPage() {
               </label>
             </div>
 
+            {/* Zona de peligro: Eliminar evento (solo organizador) */}
+            <div
+              style={{
+                marginTop: 24,
+                padding: '16px',
+                borderRadius: 14,
+                background: event.status === 'drawn' ? '#141c16' : '#260a08',
+                border: event.status === 'drawn' ? '1px solid #1f4228' : '1px solid #7f1d1d',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+                <div>
+                  <strong style={{ color: event.status === 'drawn' ? '#cbd5e1' : '#fca5a5', fontSize: 13, display: 'block' }}>
+                    Zona del Administrador
+                  </strong>
+                  <span style={{ fontSize: 12, color: event.status === 'drawn' ? '#94a3b8' : '#f87171' }}>
+                    {event.status === 'drawn'
+                      ? 'Eliminar este sorteo finalizado de forma permanente.'
+                      : '⚠️ Advertencia: Este evento todavía no fue sorteado.'}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="button"
+                  onClick={() => setShowDeleteModal(true)}
+                  style={{
+                    background: '#dc2626',
+                    color: '#fff',
+                    border: '1px solid #ef4444',
+                    padding: '8px 14px',
+                    fontSize: 12,
+                    fontWeight: 800,
+                    borderRadius: 10,
+                    cursor: 'pointer',
+                  }}
+                >
+                  🗑️ Eliminar evento
+                </button>
+              </div>
+            </div>
+
             <div style={{ display: 'flex', gap: 12, marginTop: 24 }}>
-              <button className="button primary large" onClick={handleSaveSettings} disabled={busy} style={{ flex: 1 }}>
-                {busy ? 'Guardando…' : 'Guardar cambios'}
+              <button
+                className="button primary large"
+                onClick={handleSaveSettings}
+                disabled={busy || event.status === 'drawn'}
+                style={{ flex: 1, opacity: event.status === 'drawn' ? 0.6 : 1 }}
+              >
+                {busy ? 'Guardando…' : event.status === 'drawn' ? 'Configuración bloqueada' : 'Guardar cambios'}
               </button>
               <button className="button secondary large" onClick={() => setShowConfigModal(false)}>
-                Cancelar
+                Cerrar
               </button>
             </div>
           </div>
         </div>
       )}
+
+      {/* MODAL DE ELIMINACIÓN CON ADVERTENCIA */}
+      <DeleteEventModal
+        isOpen={showDeleteModal}
+        eventName={event?.name || ''}
+        eventCode={event?.code || ''}
+        isFinished={event?.status === 'drawn'}
+        memberCount={members.length}
+        busy={deleting}
+        onConfirm={handleDeleteEvent}
+        onCancel={() => setShowDeleteModal(false)}
+      />
 
       {/* TOASTS */}
       {message && (

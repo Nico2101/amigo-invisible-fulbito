@@ -112,3 +112,40 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: String(err) }, { status: 500 })
   }
 }
+
+// DELETE /api/events — Eliminar evento (solo el administrador/organizador)
+export async function DELETE(req: NextRequest) {
+  try {
+    let id = req.nextUrl.searchParams.get('id')
+    let user_id = req.nextUrl.searchParams.get('user_id')
+
+    if (!id || !user_id) {
+      try {
+        const body = await req.json()
+        id = id || body.id
+        user_id = user_id || body.user_id
+      } catch {}
+    }
+
+    if (!id || !user_id) {
+      return NextResponse.json({ error: 'Faltan id del evento y user_id' }, { status: 400 })
+    }
+
+    const ev = await store.getEventById(id)
+    if (!ev) {
+      return NextResponse.json({ error: 'Evento no encontrado' }, { status: 404 })
+    }
+
+    if (ev.organizer_id !== user_id) {
+      return NextResponse.json({ error: 'Solo el administrador del evento puede eliminarlo.' }, { status: 403 })
+    }
+
+    await store.deleteEvent(id, user_id)
+    console.log(`[API /api/events DELETE] 🗑️ Evento "${ev.name}" (${id}) eliminado por el organizador ${user_id}`)
+    return NextResponse.json({ success: true, message: 'Evento eliminado correctamente' })
+  } catch (err) {
+    console.error('[API /api/events DELETE] ❌ Error:', err)
+    return NextResponse.json({ error: String(err) }, { status: 500 })
+  }
+}
+

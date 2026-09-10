@@ -295,6 +295,38 @@ export async function updateEventSettings(
   return ev
 }
 
+export async function deleteEvent(id: string, userId: string): Promise<boolean> {
+  const data = await loadData(true)
+  const ev = data.events[id]
+  if (!ev) return false
+
+  if (ev.organizer_id !== userId) {
+    throw new Error('Solo el administrador del evento puede eliminarlo.')
+  }
+
+  // Eliminar de events
+  delete data.events[id]
+
+  // Eliminar mapeo por código
+  if (ev.code && data.eventsByCode[ev.code]) {
+    delete data.eventsByCode[ev.code]
+  }
+  for (const [c, eventId] of Object.entries(data.eventsByCode)) {
+    if (eventId === id) {
+      delete data.eventsByCode[c]
+    }
+  }
+
+  // Eliminar miembros, preferencias y asignaciones asociadas
+  delete data.membersByEvent[id]
+  delete data.prefsByEvent[id]
+  delete data.assignmentsByEvent[id]
+
+  await saveData(data)
+  console.log(`[Store] 🗑️ Evento ${id} (${ev.name}) eliminado completamente por el organizador ${userId}`)
+  return true
+}
+
 export async function addMember(member: StoreMember): Promise<void> {
   const data = await loadData(true)
   const list = data.membersByEvent[member.event_id] || []
