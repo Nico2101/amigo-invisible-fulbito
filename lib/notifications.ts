@@ -39,17 +39,62 @@ export function generateWhatsAppLink(
   return `https://api.whatsapp.com/send?text=${encodedText}`
 }
 
+export function generateInviteWhatsAppLink(
+  eventName: string,
+  eventCode: string,
+  siteUrl: string,
+  budgetMin?: number,
+  budgetMax?: number,
+  eventDate?: string | null,
+  rules?: string
+): string {
+  const cleanUrl = siteUrl ? siteUrl.replace(/\/+$/, '') : ''
+  const directLink = `${cleanUrl}/evento/${eventCode}`
+
+  let budgetText = ''
+  if (budgetMin && budgetMax) {
+    budgetText = `💰 *Presupuesto:* $${budgetMin.toLocaleString('es-AR')} – $${budgetMax.toLocaleString('es-AR')}\n`
+  }
+
+  let dateText = ''
+  if (eventDate) {
+    dateText = `📅 *Fecha de entrega:* ${new Date(`${eventDate}T12:00:00`).toLocaleDateString('es-AR')}\n`
+  }
+
+  let rulesText = ''
+  if (rules) {
+    rulesText = `📌 *Reglas:* ${rules}\n`
+  }
+
+  const text =
+    `⚽ *¡Amigo Invisible Fulbito Iniciado!* ⚽\n\n` +
+    `¡Muchachos! Se armó el sorteo para *${eventName}*.\n\n` +
+    budgetText +
+    dateText +
+    rulesText +
+    `\n` +
+    `👉 *Sumate directamente al plantel con este link:*\n` +
+    `${directLink}\n\n` +
+    `*(Solo entrás con tu nombre y cargás tus 3 camisetas no deseadas. ¡Sin registro ni contraseñas!)*\n\n` +
+    `¡No te cuelgues!`
+
+  return `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`
+}
+
 export function generateGroupWhatsAppLink(
   eventName: string,
   eventCode: string,
   siteUrl: string
 ): string {
+  const cleanUrl = siteUrl ? siteUrl.replace(/\/+$/, '') : ''
+  const directLink = `${cleanUrl}/evento/${eventCode}`
+
   const text =
     `⚽ *¡Sorteo Realizado! - ${eventName}* ⚽\n\n` +
-    `El sorteo del Amigo Invisible de camisetas ya está listo.\n\n` +
-    `Entren a la web con el código *${eventCode}* para descubrir a quién le regalan:\n` +
-    `👉 ${siteUrl}\n\n` +
-    `¡Recuerden mantener el secreto!`
+    `El sorteo del Amigo Invisible ya está listo.\n\n` +
+    `Entren a ver a quién le regalan con este link directo:\n` +
+    `👉 ${directLink}\n\n` +
+    `¡Recuerden mantener el secreto en el grupo!`
 
   return `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`
 }

@@ -1,6 +1,8 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import {
   generateWhatsAppLink,
   generateGroupWhatsAppLink,
@@ -65,6 +67,7 @@ async function api<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 export default function Home() {
+  const router = useRouter()
   const [screen, setScreen] = useState<Screen>('home')
   const [currentUser, setCurrentUser] = useState<LocalUser | null>(null)
 
@@ -74,6 +77,13 @@ export default function Home() {
   const [eventName, setEventName] = useState('Amigo Invisible · Fulbito de los Jueves')
   const [eventDate, setEventDate] = useState('')
   const [code, setCode] = useState('')
+
+  // Configuración del organizador (presupuesto, reglas)
+  const [budgetMin, setBudgetMin] = useState(50000)
+  const [budgetMax, setBudgetMax] = useState(100000)
+  const [rules, setRules] = useState('Clubes internacionales y selecciones nacionales. No clubes argentinos.')
+  const [giftType, setGiftType] = useState('Camisetas de fútbol')
+  const [lastEventCode, setLastEventCode] = useState('')
 
   const [event, setEvent] = useState<EventRow | null>(null)
   const [members, setMembers] = useState<MemberRow[]>([])
@@ -92,7 +102,7 @@ export default function Home() {
     setMessageType(type)
   }
 
-  // Load stored session
+  // Load stored session and last event code
   useEffect(() => {
     try {
       const stored = localStorage.getItem(USER_SESSION_KEY)
@@ -102,6 +112,10 @@ export default function Home() {
         setName(parsed.name)
         setEmail(parsed.email || '')
         setPhone(parsed.phone || '')
+      }
+      const savedCode = localStorage.getItem('amigo_last_event_code')
+      if (savedCode) {
+        setLastEventCode(savedCode)
       }
     } catch {
       localStorage.removeItem(USER_SESSION_KEY)
@@ -148,6 +162,15 @@ export default function Home() {
     return () => clearTimeout(timer)
   }, [message])
 
+  // Polling automático del plantel en la sala cada 3 segundos
+  useEffect(() => {
+    if (screen !== 'room' || !event?.id) return
+    const interval = setInterval(() => {
+      refreshMembers(event.id)
+    }, 3000)
+    return () => clearInterval(interval)
+  }, [screen, event?.id, refreshMembers])
+
   // --- ACTIONS ---
 
   async function handleCreateEvent() {
@@ -170,14 +193,15 @@ export default function Home() {
           organizer_id: userId,
           organizer_name: cleanName,
           event_date: eventDate || null,
+          budget_min: budgetMin,
+          budget_max: budgetMax,
+          rules: rules.trim(),
+          gift_type: giftType.trim(),
         }),
       })
 
-      setEvent(ev)
-      setCode(ev.code)
-      await refreshMembers(ev.id)
-      setScreen('prefs')
-      notify('¡Evento creado con éxito! Ahora cargá tus 3 camisetas no deseadas.', 'success')
+      localStorage.setItem('amigo_last_event_code', ev.code)
+      router.push(`/evento/${ev.code}`)
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Error al crear evento', 'error')
     } finally {
@@ -186,48 +210,19 @@ export default function Home() {
   }
 
   async function handleJoinEvent() {
-    const cleanCode = code.trim().toUpperCase()
+    const cleanCode = code.replace(/\s+/g, '').toUpperCase()
     const cleanName = name.trim()
 
     if (!cleanCode) { notify('Ingresá el código de 6 caracteres.', 'error'); return }
-    if (!cleanName) { notify('Ingresá tu nombre.', 'error'); return }
+    if (cleanCode.length < 6) { notify('El código debe tener 6 caracteres.', 'error'); return }
 
-    setBusy(true)
-
-    const userId = currentUser?.id || getOrCreateUserId()
-    saveUserSession({ id: userId, name: cleanName, email: email.trim(), phone: phone.trim() })
-
-    try {
-      const data = await api<{ event: EventRow; members: MemberRow[]; myPrefs: string[] }>('/api/events/join', {
-        method: 'POST',
-        body: JSON.stringify({ code: cleanCode, user_id: userId, display_name: cleanName }),
-      })
-
-      setEvent(data.event)
-      setCode(data.event.code)
-      setMembers(data.members)
-      await refreshMembers(data.event.id)
-
-      const nextPrefs = ['', '', '']
-      if (data.myPrefs && data.myPrefs.length > 0) {
-        data.myPrefs.forEach((val: string, i: number) => { if (i < 3) nextPrefs[i] = val })
-      }
-      setPrefs(nextPrefs)
-
-      if (data.event.status === 'drawn') {
-        await handleLoadResult(data.event.id, userId)
-      } else if (nextPrefs.every(Boolean)) {
-        setScreen('room')
-        notify('¡Ya estás en la sala! Tus preferencias están guardadas.', 'success')
-      } else {
-        setScreen('prefs')
-        notify('Te uniste correctamente. Ahora elegí tus 3 no deseados.', 'success')
-      }
-    } catch (err) {
-      notify(err instanceof Error ? err.message : 'Error al unirte al evento', 'error')
-    } finally {
-      setBusy(false)
+    if (cleanName) {
+      const userId = currentUser?.id || getOrCreateUserId()
+      saveUserSession({ id: userId, name: cleanName, email: email.trim(), phone: phone.trim() })
     }
+
+    localStorage.setItem('amigo_last_event_code', cleanCode)
+    router.push(`/evento/${cleanCode}`)
   }
 
   async function handleSavePreferences() {
@@ -330,6 +325,38 @@ export default function Home() {
       <main className="page">
         {screen === 'home' && (
           <>
+            {lastEventCode && (
+              <div style={{
+                background: 'linear-gradient(135deg, rgba(34, 197, 94, 0.15), rgba(16, 185, 129, 0.08))',
+                border: '1px solid rgba(34, 197, 94, 0.35)',
+                borderRadius: 20,
+                padding: '16px 24px',
+                marginBottom: 24,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: 14,
+              }}>
+                <div>
+                  <strong style={{ display: 'block', color: '#eefbf2', fontSize: 15 }}>
+                    ⚽ Tenés un sorteo activo (Código: <code style={{ color: '#4ade80' }}>{lastEventCode}</code>)
+                  </strong>
+                  <span style={{ fontSize: 13, color: '#8aa494' }}>
+                    Podés volver directo a la sala o ver los resultados si ya se realizó el sorteo.
+                  </span>
+                </div>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <Link href={`/evento/${lastEventCode}`} className="button primary small-button">
+                    Ir a la sala →
+                  </Link>
+                  <Link href={`/regalo?code=${lastEventCode}`} className="button ghost small-button">
+                    🎁 Ver regalo
+                  </Link>
+                </div>
+              </div>
+            )}
+
             <section className="hero-card">
               <div className="hero-copy">
                 <div className="eyebrow">⚽ Organizado para el grupo de cancha</div>
@@ -389,19 +416,39 @@ export default function Home() {
                 <div className="auth-panel-head">
                   <div className="auth-icon">⚽</div>
                   <div>
-                    <h3>Tu identificación de jugador</h3>
-                    <p>Sin contraseña. Tu nombre se usa para identificarte en la sala.</p>
+                    <h3>Tu identificación de organizador</h3>
+                    <p>Sin contraseña. Tu nombre se usará en la sala y los avisos.</p>
                   </div>
                 </div>
                 <label>Tu nombre de jugador *
-                  <input value={name} onChange={e => setName(e.target.value)} placeholder="Ej. Leo Messi, Nico Abritta" autoComplete="name" />
+                  <input
+                    value={name}
+                    onChange={e => setName(e.target.value)}
+                    placeholder="Ej. Leo Messi, Nico Abritta"
+                    autoCapitalize="words"
+                    autoComplete="name"
+                  />
                 </label>
                 <div className="form-grid">
                   <label>Email (opcional)
-                    <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="vos@email.com" autoComplete="email" />
+                    <input
+                      type="email"
+                      inputMode="email"
+                      autoComplete="email"
+                      value={email}
+                      onChange={e => setEmail(e.target.value)}
+                      placeholder="vos@email.com"
+                    />
                   </label>
                   <label>WhatsApp (opcional)
-                    <input type="tel" value={phone} onChange={e => setPhone(e.target.value)} placeholder="+54 9 11..." />
+                    <input
+                      type="tel"
+                      inputMode="tel"
+                      autoComplete="tel"
+                      value={phone}
+                      onChange={e => setPhone(e.target.value)}
+                      placeholder="+54 9 11..."
+                    />
                   </label>
                 </div>
               </div>
@@ -415,21 +462,80 @@ export default function Home() {
                 </label>
               </div>
 
-              <div className="form-grid">
-                <div className="readonly-card">
-                  <span>Presupuesto sugerido</span>
-                  <strong>$50.000 – $100.000</strong>
-                  <small>Equivalente a una camiseta oficial o réplica top.</small>
+              {/* Configuración expandida del organizador */}
+              <div style={{ marginTop: 20, padding: 18, background: '#0a1e12', border: '1px solid #1a4227', borderRadius: 18 }}>
+                <div className="eyebrow" style={{ marginBottom: 12 }}>⚙️ Configuración del evento (Organizador)</div>
+
+                <div className="form-grid">
+                  <label>Presupuesto mínimo ($)
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      value={budgetMin}
+                      onChange={e => setBudgetMin(Number(e.target.value))}
+                      min={0}
+                      step={5000}
+                    />
+                  </label>
+                  <label>Presupuesto máximo ($)
+                    <input
+                      type="number"
+                      inputMode="numeric"
+                      value={budgetMax}
+                      onChange={e => setBudgetMax(Number(e.target.value))}
+                      min={0}
+                      step={5000}
+                    />
+                  </label>
                 </div>
-                <div className="readonly-card">
-                  <span>Regla de camisetas</span>
-                  <strong>Internacionales y Selecciones</strong>
-                  <small>Se evitan camisetas de clubes locales si se prefiere.</small>
+
+                <div style={{ marginTop: 10 }}>
+                  <span style={{ fontSize: 12, color: '#8aa494' }}>Presets de presupuesto:</span>
+                  <div className="preset-group">
+                    <button
+                      type="button"
+                      className={`preset-btn ${budgetMin === 30000 && budgetMax === 60000 ? 'active' : ''}`}
+                      onClick={() => { setBudgetMin(30000); setBudgetMax(60000) }}
+                    >
+                      $30k – $60k (Económico)
+                    </button>
+                    <button
+                      type="button"
+                      className={`preset-btn ${budgetMin === 50000 && budgetMax === 100000 ? 'active' : ''}`}
+                      onClick={() => { setBudgetMin(50000); setBudgetMax(100000) }}
+                    >
+                      $50k – $100k (Estándar)
+                    </button>
+                    <button
+                      type="button"
+                      className={`preset-btn ${budgetMin === 80000 && budgetMax === 150000 ? 'active' : ''}`}
+                      onClick={() => { setBudgetMin(80000); setBudgetMax(150000) }}
+                    >
+                      $80k – $150k (Oficiales)
+                    </button>
+                  </div>
+                </div>
+
+                <div className="form-grid" style={{ marginTop: 16 }}>
+                  <label>Tipo de regalo
+                    <input
+                      value={giftType}
+                      onChange={e => setGiftType(e.target.value)}
+                      placeholder="Camisetas de fútbol"
+                    />
+                  </label>
+                  <label>Reglas de camisetas / indumentaria
+                    <input
+                      value={rules}
+                      onChange={e => setRules(e.target.value)}
+                      placeholder="Ej. Clubes internacionales y selecciones"
+                    />
+                  </label>
                 </div>
               </div>
 
-              <button className="button primary large full" onClick={handleCreateEvent} disabled={busy} style={{ marginTop: 20 }}>
-                {busy ? 'Creando evento…' : 'Crear evento e ingresar →'}
+              <button className="button primary large full" onClick={handleCreateEvent} disabled={busy} style={{ marginTop: 24 }}>
+                {busy ? 'Creando evento…' : 'Crear evento e ingresar a la sala →'}
               </button>
             </div>
 
@@ -451,19 +557,49 @@ export default function Home() {
               <p className="lead">Ingresá el código de 6 letras que te compartieron y tu nombre.</p>
 
               <label>Código del evento *
-                <input className="code-input" value={code} onChange={e => setCode(e.target.value.toUpperCase())} maxLength={6} placeholder="ABC123" />
+                <input
+                  className="code-input"
+                  value={code}
+                  onChange={e => setCode(e.target.value.replace(/\s+/g, '').toUpperCase())}
+                  maxLength={6}
+                  placeholder="ABC123"
+                  inputMode="text"
+                  autoCapitalize="characters"
+                  autoCorrect="off"
+                  spellCheck="false"
+                />
               </label>
 
               <div className="auth-panel" style={{ marginTop: 16 }}>
                 <label>Tu nombre *
-                  <input value={name} onChange={e => setName(e.target.value)} placeholder="Tu nombre y apellido" />
+                  <input
+                    value={name}
+                    onChange={e => setName(e.target.value)}
+                    placeholder="Tu nombre y apellido"
+                    autoCapitalize="words"
+                    autoComplete="name"
+                  />
                 </label>
                 <div className="form-grid">
                   <label>Email (opcional)
-                    <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="vos@email.com" />
+                    <input
+                      type="email"
+                      inputMode="email"
+                      autoComplete="email"
+                      value={email}
+                      onChange={e => setEmail(e.target.value)}
+                      placeholder="vos@email.com"
+                    />
                   </label>
                   <label>WhatsApp (opcional)
-                    <input type="tel" value={phone} onChange={e => setPhone(e.target.value)} placeholder="+54 9 11..." />
+                    <input
+                      type="tel"
+                      inputMode="tel"
+                      autoComplete="tel"
+                      value={phone}
+                      onChange={e => setPhone(e.target.value)}
+                      placeholder="+54 9 11..."
+                    />
                   </label>
                 </div>
               </div>

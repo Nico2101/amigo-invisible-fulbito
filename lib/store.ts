@@ -1,6 +1,6 @@
-// Almacenamiento en memoria del servidor de Next.js.
-// Compartido entre todas las peticiones mientras el proceso de Node esté vivo.
-// Funciona perfecto con `npm run dev` y `npm start` (un solo proceso).
+import fs from 'fs'
+import path from 'path'
+import os from 'os'
 
 export interface StoreEvent {
   id: string
@@ -39,71 +39,198 @@ export interface StoreAssignment {
   recipient_user_id: string
 }
 
-// ---- Singleton Maps (viven en el proceso del server) ----
+interface StoreData {
+  events: Record<string, StoreEvent>
+  eventsByCode: Record<string, string> // CODE -> event.id
+  membersByEvent: Record<string, StoreMember[]>
+  prefsByEvent: Record<string, StorePreference[]>
+  assignmentsByEvent: Record<string, StoreAssignment[]>
+}
 
-const events = new Map<string, StoreEvent>()          // id → event
-const eventsByCode = new Map<string, string>()         // code → id
-const membersByEvent = new Map<string, StoreMember[]>()
-const prefsByEvent = new Map<string, StorePreference[]>()
-const assignmentsByEvent = new Map<string, StoreAssignment[]>()
+const IS_VERCEL = Boolean(process.env.VERCEL)
+const SEED_FILE = path.join(process.cwd(), 'data', 'store.json')
+const DATA_DIR = IS_VERCEL ? path.join(os.tmpdir(), 'amigo-data') : path.join(process.cwd(), 'data')
+const DATA_FILE = path.join(DATA_DIR, 'store.json')
+
+// Cache en memoria por si el sistema de archivos es estrictamente de sólo lectura
+let memoryCache: StoreData | null = null
+
+function getInitialData(): StoreData {
+  return {
+    events: {},
+    eventsByCode: {},
+    membersByEvent: {},
+    prefsByEvent: {},
+    assignmentsByEvent: {},
+  }
+}
+
+// Asegurar que la carpeta y el archivo existan siempre
+function ensureFile(): void {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true })
+    }
+    if (!fs.existsSync(DATA_FILE)) {
+      // Si hay archivo inicial en el bundle, copiarlo
+      if (fs.existsSync(SEED_FILE)) {
+        try {
+          const seedContent = fs.readFileSync(SEED_FILE, 'utf-8')
+          fs.writeFileSync(DATA_FILE, seedContent, 'utf-8')
+          return
+        } catch {
+          // Ignorar si falla lectura de seed
+        }
+      }
+      const initial = getInitialData()
+      fs.writeFileSync(DATA_FILE, JSON.stringify(initial, null, 2), 'utf-8')
+    }
+  } catch (err) {
+    console.error('[Store] Error asegurando archivo de datos:', err)
+  }
+}
+
+function loadData(): StoreData {
+  if (memoryCache) {
+    return memoryCache
+  }
+  ensureFile()
+  try {
+    let raw = ''
+    if (fs.existsSync(DATA_FILE)) {
+      raw = fs.readFileSync(DATA_FILE, 'utf-8')
+    } else if (fs.existsSync(SEED_FILE)) {
+      raw = fs.readFileSync(SEED_FILE, 'utf-8')
+    }
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<StoreData>
+      memoryCache = {
+        events: parsed.events || {},
+        eventsByCode: parsed.eventsByCode || {},
+        membersByEvent: parsed.membersByEvent || {},
+        prefsByEvent: parsed.prefsByEvent || {},
+        assignmentsByEvent: parsed.assignmentsByEvent || {},
+      }
+      return memoryCache
+    }
+  } catch (err) {
+    console.error('[Store] Error leyendo archivo de datos:', err)
+  }
+  memoryCache = getInitialData()
+  return memoryCache
+}
+
+function saveData(data: StoreData): void {
+  memoryCache = data
+  ensureFile()
+  try {
+    const tempFile = `${DATA_FILE}.tmp`
+    fs.writeFileSync(tempFile, JSON.stringify(data, null, 2), 'utf-8')
+    fs.renameSync(tempFile, DATA_FILE)
+  } catch {
+    try {
+      fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), 'utf-8')
+    } catch (writeErr) {
+      console.warn('[Store] Sistema de archivos no escribible (usando memoria):', writeErr)
+    }
+  }
+}
 
 // ---- Funciones públicas ----
 
 export function createEvent(ev: StoreEvent): StoreEvent {
-  events.set(ev.id, ev)
-  eventsByCode.set(ev.code.toUpperCase(), ev.id)
-  console.log(`[Store] Evento creado: ${ev.name} (${ev.code}), id=${ev.id}`)
+  const data = loadData()
+  const cleanCode = ev.code.trim().toUpperCase()
+  data.events[ev.id] = ev
+  data.eventsByCode[cleanCode] = ev.id
+  saveData(data)
+  console.log(`[Store:File] ✅ Evento guardado en disco: "${ev.name}" (código: ${cleanCode}, id: ${ev.id})`)
   return ev
 }
 
 export function getEventByCode(code: string): StoreEvent | null {
-  const id = eventsByCode.get(code.toUpperCase())
+  const data = loadData()
+  const cleanCode = (code || '').trim().toUpperCase().replace(/\s+/g, '')
+  const id = data.eventsByCode[cleanCode]
+  console.log(`[Store:File] Buscando código "${cleanCode}". Códigos disponibles en disco:`, Object.keys(data.eventsByCode))
   if (!id) return null
-  return events.get(id) || null
+  return data.events[id] || null
 }
 
 export function getEventById(id: string): StoreEvent | null {
-  return events.get(id) || null
+  const data = loadData()
+  return data.events[id] || null
 }
 
 export function updateEventStatus(id: string, status: StoreEvent['status']): void {
-  const ev = events.get(id)
+  const data = loadData()
+  const ev = data.events[id]
   if (ev) {
     ev.status = status
-    events.set(id, ev)
+    data.events[id] = ev
+    saveData(data)
+    console.log(`[Store:File] Estado del evento ${id} actualizado a "${status}"`)
   }
 }
 
+export function updateEventSettings(
+  id: string,
+  settings: Partial<Pick<StoreEvent, 'name' | 'budget_min' | 'budget_max' | 'event_date' | 'rules' | 'gift_type' | 'preference_count'>>
+): StoreEvent | null {
+  const data = loadData()
+  const ev = data.events[id]
+  if (!ev) return null
+
+  if (settings.name !== undefined && settings.name.trim()) ev.name = settings.name.trim()
+  if (settings.budget_min !== undefined) ev.budget_min = Number(settings.budget_min)
+  if (settings.budget_max !== undefined) ev.budget_max = Number(settings.budget_max)
+  if (settings.event_date !== undefined) ev.event_date = settings.event_date
+  if (settings.rules !== undefined) ev.rules = settings.rules
+  if (settings.gift_type !== undefined) ev.gift_type = settings.gift_type
+  if (settings.preference_count !== undefined) ev.preference_count = Number(settings.preference_count)
+
+  data.events[id] = ev
+  saveData(data)
+  console.log(`[Store:File] ✅ Ajustes del evento ${id} actualizados:`, settings)
+  return ev
+}
+
 export function addMember(member: StoreMember): void {
-  const list = membersByEvent.get(member.event_id) || []
+  const data = loadData()
+  const list = data.membersByEvent[member.event_id] || []
   const existing = list.findIndex(m => m.user_id === member.user_id)
   if (existing >= 0) {
     list[existing] = member
   } else {
     list.push(member)
   }
-  membersByEvent.set(member.event_id, list)
-  console.log(`[Store] Miembro agregado: ${member.display_name} → evento ${member.event_id}`)
+  data.membersByEvent[member.event_id] = list
+  saveData(data)
+  console.log(`[Store:File] Miembro "${member.display_name}" guardado en evento ${member.event_id}`)
 }
 
 export function getMembers(eventId: string): StoreMember[] {
-  return membersByEvent.get(eventId) || []
+  const data = loadData()
+  return data.membersByEvent[eventId] || []
 }
 
 export function savePreferences(eventId: string, userId: string, values: string[]): void {
-  let list = prefsByEvent.get(eventId) || []
+  const data = loadData()
+  let list = data.prefsByEvent[eventId] || []
   list = list.filter(p => p.user_id !== userId)
   values.forEach((value, index) => {
     if (value.trim()) {
       list.push({ event_id: eventId, user_id: userId, position: index + 1, value: value.trim() })
     }
   })
-  prefsByEvent.set(eventId, list)
-  console.log(`[Store] Preferencias guardadas para user=${userId} en evento=${eventId}`)
+  data.prefsByEvent[eventId] = list
+  saveData(data)
+  console.log(`[Store:File] Preferencias guardadas para user=${userId} en evento=${eventId}`)
 }
 
 export function getPreferences(eventId: string, userId: string): string[] {
-  const list = prefsByEvent.get(eventId) || []
+  const data = loadData()
+  const list = data.prefsByEvent[eventId] || []
   return list
     .filter(p => p.user_id === userId)
     .sort((a, b) => a.position - b.position)
@@ -111,17 +238,20 @@ export function getPreferences(eventId: string, userId: string): string[] {
 }
 
 export function getAllPreferences(eventId: string): StorePreference[] {
-  return prefsByEvent.get(eventId) || []
+  const data = loadData()
+  return data.prefsByEvent[eventId] || []
 }
 
 export function getProgress(eventId: string): { total: number; completed: number; status: string } {
-  const ev = events.get(eventId)
-  const members = getMembers(eventId)
+  const data = loadData()
+  const ev = data.events[eventId]
+  const members = data.membersByEvent[eventId] || []
   const required = ev?.preference_count || 3
 
   let completed = 0
   for (const m of members) {
-    const prefs = getPreferences(eventId, m.user_id)
+    const prefs = (data.prefsByEvent[eventId] || [])
+      .filter(p => p.user_id === m.user_id)
     if (prefs.length >= required) completed++
   }
 
@@ -133,7 +263,8 @@ export function getProgress(eventId: string): { total: number; completed: number
 }
 
 export function runDraw(eventId: string): StoreAssignment[] {
-  const members = getMembers(eventId)
+  const data = loadData()
+  const members = data.membersByEvent[eventId] || []
   if (members.length < 2) throw new Error('Se necesitan al menos 2 participantes.')
 
   let shuffled = [...members]
@@ -146,7 +277,7 @@ export function runDraw(eventId: string): StoreAssignment[] {
     valid = members.every((m, i) => m.user_id !== shuffled[i].user_id)
   }
 
-  if (!valid) throw new Error('No se pudo generar un sorteo válido.')
+  if (!valid) throw new Error('No se pudo generar un sorteo válido. Intentá nuevamente.')
 
   const assignments: StoreAssignment[] = members.map((m, i) => ({
     event_id: eventId,
@@ -154,23 +285,30 @@ export function runDraw(eventId: string): StoreAssignment[] {
     recipient_user_id: shuffled[i].user_id,
   }))
 
-  assignmentsByEvent.set(eventId, assignments)
-  updateEventStatus(eventId, 'drawn')
+  data.assignmentsByEvent[eventId] = assignments
+  if (data.events[eventId]) {
+    data.events[eventId].status = 'drawn'
+  }
+  saveData(data)
 
-  console.log(`[Store] Sorteo realizado para evento=${eventId}: ${assignments.length} asignaciones`)
+  console.log(`[Store:File] 🎉 Sorteo completado para evento ${eventId}: ${assignments.length} parejas`)
   return assignments
 }
 
 export function getMyAssignment(eventId: string, userId: string): { recipientName: string; preferences: string[] } | null {
-  const assignments = assignmentsByEvent.get(eventId) || []
+  const data = loadData()
+  const assignments = data.assignmentsByEvent[eventId] || []
   const mine = assignments.find(a => a.giver_user_id === userId)
   if (!mine) return null
 
-  const members = getMembers(eventId)
+  const members = data.membersByEvent[eventId] || []
   const recipient = members.find(m => m.user_id === mine.recipient_user_id)
   if (!recipient) return null
 
-  const prefs = getPreferences(eventId, recipient.user_id)
+  const prefs = (data.prefsByEvent[eventId] || [])
+    .filter(p => p.user_id === recipient.user_id)
+    .sort((a, b) => a.position - b.position)
+    .map(p => p.value)
 
   return {
     recipientName: recipient.display_name,
@@ -179,22 +317,19 @@ export function getMyAssignment(eventId: string, userId: string): { recipientNam
 }
 
 export function getAssignments(eventId: string): StoreAssignment[] {
-  return assignmentsByEvent.get(eventId) || []
+  const data = loadData()
+  return data.assignmentsByEvent[eventId] || []
 }
 
 export function debugGetAll() {
-  const allEvents: StoreEvent[] = []
-  events.forEach(ev => allEvents.push(ev))
-
-  const codes: Record<string, string> = {}
-  eventsByCode.forEach((id, code) => { codes[code] = id })
-
+  const data = loadData()
   return {
-    eventCount: events.size,
-    codes,
-    events: allEvents,
-    members: Object.fromEntries(membersByEvent),
-    preferences: Object.fromEntries(prefsByEvent),
-    assignments: Object.fromEntries(assignmentsByEvent),
+    dataFile: DATA_FILE,
+    eventCount: Object.keys(data.events).length,
+    codes: data.eventsByCode,
+    events: Object.values(data.events),
+    members: data.membersByEvent,
+    preferences: data.prefsByEvent,
+    assignments: data.assignmentsByEvent,
   }
 }
