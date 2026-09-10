@@ -181,3 +181,20 @@ export function getMyAssignment(eventId: string, userId: string): { recipientNam
 export function getAssignments(eventId: string): StoreAssignment[] {
   return assignmentsByEvent.get(eventId) || []
 }
+
+export function debugGetAll() {
+  const allEvents: StoreEvent[] = []
+  events.forEach(ev => allEvents.push(ev))
+
+  const codes: Record<string, string> = {}
+  eventsByCode.forEach((id, code) => { codes[code] = id })
+
+  return {
+    eventCount: events.size,
+    codes,
+    events: allEvents,
+    members: Object.fromEntries(membersByEvent),
+    preferences: Object.fromEntries(prefsByEvent),
+    assignments: Object.fromEntries(assignmentsByEvent),
+  }
+}
