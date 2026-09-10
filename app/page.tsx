@@ -141,7 +141,6 @@ export default function Home() {
 
       const rawMembers = (data || []) as MemberRow[]
 
-      // Fetch preference completion for each member
       const { data: prefData } = await supabase
         .from('preferences')
         .select('user_id, position')
@@ -168,7 +167,7 @@ export default function Home() {
     } catch (err) {
       console.warn('Error al cargar miembros:', err)
     }
-  }, [])
+  }, [supabase])
 
   const loadMyResult = useCallback(async (eventId: string, userId: string) => {
     try {
@@ -186,7 +185,6 @@ export default function Home() {
         return
       }
 
-      // Direct fallback query if RPC not applied yet
       const { data: assignData } = await supabase
         .from('assignments')
         .select('recipient_user_id')
@@ -223,9 +221,8 @@ export default function Home() {
     } catch (err) {
       notify(err instanceof Error ? err.message : String(err), 'error')
     }
-  }, [])
+  }, [supabase])
 
-  // Auto-dismiss toast message
   useEffect(() => {
     if (!message) return
     const timer = setTimeout(() => setMessage(''), 6000)
@@ -253,12 +250,38 @@ export default function Home() {
     const userSession: LocalUser = { id: userId, name: cleanName, email: email.trim(), phone: phone.trim() }
     saveUserSession(userSession)
 
-    try {
-      const newCode = crypto.getRandomValues(new Uint32Array(3))
-        .reduce((acc, val) => acc + val.toString(36), '')
-        .slice(0, 6)
-        .toUpperCase()
+    const newCode = crypto.getRandomValues(new Uint32Array(3))
+      .reduce((acc, val) => acc + val.toString(36), '')
+      .slice(0, 6)
+      .toUpperCase()
 
+    try {
+      // Intento 1: Ejecutar RPC `create_event_simple`
+      const { data: rpcData, error: rpcErr } = await supabase.rpc('create_event_simple', {
+        p_name: cleanEventName,
+        p_gift_type: 'Camisetas de fútbol',
+        p_theme: 'fulbito',
+        p_budget_min: 50000,
+        p_budget_max: 100000,
+        p_event_date: eventDate || null,
+        p_organizer_id: userId,
+        p_code: newCode,
+        p_preference_count: 3,
+        p_rules: 'Clubes internacionales y selecciones nacionales. No clubes argentinos.',
+        p_organizer_name: cleanName,
+      })
+
+      if (!rpcErr && rpcData) {
+        const createdRow = (Array.isArray(rpcData) ? rpcData[0] : rpcData) as EventRow
+        setEvent(createdRow)
+        setCode(createdRow.code)
+        await refreshMembers(createdRow.id)
+        setScreen('prefs')
+        notify('¡Evento creado con éxito! Ahora cargá tus 3 camisetas no deseadas.', 'success')
+        return
+      }
+
+      // Intento 2: Inserción directa
       const payload = {
         name: cleanEventName,
         gift_type: 'Camisetas de fútbol',
@@ -273,7 +296,12 @@ export default function Home() {
       }
 
       const { data: created, error } = await supabase.from('events').insert(payload).select('*').single()
-      if (error) throw error
+      if (error) {
+        if (/401|unauthorized|apikey/i.test(error.message || '')) {
+          throw new Error('Supabase no reconoció la clave API. Copiá tu Anon Key en el archivo .env.local para habilitar la base de datos remota.')
+        }
+        throw error
+      }
 
       const eventRow = created as EventRow
 
@@ -290,7 +318,8 @@ export default function Home() {
       setScreen('prefs')
       notify('¡Evento creado con éxito! Ahora cargá tus 3 camisetas no deseadas.', 'success')
     } catch (err) {
-      notify(err instanceof Error ? err.message : 'Error al crear evento', 'error')
+      const errMsg = err instanceof Error ? err.message : String(err)
+      notify(errMsg, 'error')
     } finally {
       setBusy(false)
     }
@@ -316,40 +345,53 @@ export default function Home() {
     saveUserSession(userSession)
 
     try {
-      // Lookup event
-      const { data: foundEvents, error: lookupError } = await supabase
-        .from('events')
-        .select('*')
-        .eq('code', cleanCode)
+      // Intento 1: RPC join_event_simple
+      const { data: rpcJoin, error: rpcErr } = await supabase.rpc('join_event_simple', {
+        p_code: cleanCode,
+        p_user_id: userId,
+        p_display_name: cleanName,
+      })
 
-      if (lookupError || !foundEvents || foundEvents.length === 0) {
-        throw new Error('No se encontró ningún evento activo con ese código.')
+      let targetEvent: EventRow | null = null
+
+      if (!rpcErr && rpcJoin) {
+        targetEvent = (Array.isArray(rpcJoin) ? rpcJoin[0] : rpcJoin) as EventRow
+      } else {
+        // Intento 2: Búsqueda manual
+        const { data: foundEvents, error: lookupError } = await supabase
+          .from('events')
+          .select('*')
+          .eq('code', cleanCode)
+
+        if (lookupError || !foundEvents || foundEvents.length === 0) {
+          throw new Error('No se encontró ningún evento activo con el código ' + cleanCode)
+        }
+
+        targetEvent = foundEvents[0] as EventRow
+
+        const { data: existingMember } = await supabase
+          .from('event_members')
+          .select('user_id')
+          .eq('event_id', targetEvent.id)
+          .eq('user_id', userId)
+          .maybeSingle()
+
+        if (!existingMember) {
+          await supabase.from('event_members').insert({
+            event_id: targetEvent.id,
+            user_id: userId,
+            display_name: cleanName,
+            role: 'participant',
+          })
+        }
       }
 
-      const targetEvent = foundEvents[0] as EventRow
-
-      // Check member
-      const { data: existingMember } = await supabase
-        .from('event_members')
-        .select('user_id')
-        .eq('event_id', targetEvent.id)
-        .eq('user_id', userId)
-        .maybeSingle()
-
-      if (!existingMember) {
-        await supabase.from('event_members').insert({
-          event_id: targetEvent.id,
-          user_id: userId,
-          display_name: cleanName,
-          role: 'participant',
-        })
-      }
+      if (!targetEvent) throw new Error('No se pudo acceder al evento.')
 
       setEvent(targetEvent)
       setCode(targetEvent.code)
       await refreshMembers(targetEvent.id)
 
-      // Fetch user preferences if existing
       const { data: myPrefs } = await supabase
         .from('preferences')
         .select('position, value')
@@ -392,18 +434,28 @@ export default function Home() {
     setBusy(true)
 
     try {
-      await supabase.from('preferences').delete().eq('event_id', event.id).eq('user_id', currentUser.id)
+      // Intento 1: RPC
+      const { error: rpcErr } = await supabase.rpc('save_preferences_simple', {
+        p_event_id: event.id,
+        p_user_id: currentUser.id,
+        p_pref1: cleaned[0],
+        p_pref2: cleaned[1],
+        p_pref3: cleaned[2],
+      })
 
-      const { error } = await supabase.from('preferences').insert(
-        cleaned.map((val, idx) => ({
-          event_id: event.id,
-          user_id: currentUser.id,
-          position: idx + 1,
-          value: val,
-        }))
-      )
+      if (rpcErr) {
+        await supabase.from('preferences').delete().eq('event_id', event.id).eq('user_id', currentUser.id)
 
-      if (error) throw error
+        const { error } = await supabase.from('preferences').insert(
+          cleaned.map((val, idx) => ({
+            event_id: event.id,
+            user_id: currentUser.id,
+            position: idx + 1,
+            value: val,
+          }))
+        )
+        if (error) throw error
+      }
 
       await refreshMembers(event.id)
       setScreen('room')
@@ -422,11 +474,9 @@ export default function Home() {
     notify('Generando sorteo y asignaciones secretas…')
 
     try {
-      // 1. Run secret draw via RPC
       const { error: rpcError } = await supabase.rpc('run_secret_draw', { p_event_id: event.id })
 
       if (rpcError) {
-        // Client-side fallback algorithm if RPC is not present
         const currentMembers = [...members]
         if (currentMembers.length < 2) throw new Error('Se necesitan al menos 2 participantes.')
 
@@ -455,11 +505,9 @@ export default function Home() {
         await supabase.from('events').update({ status: 'drawn' }).eq('id', event.id)
       }
 
-      // Update local event state
       setEvent((prev) => (prev ? { ...prev, status: 'drawn' } : null))
       setProgress((prev) => ({ ...prev, status: 'drawn' }))
 
-      // 2. Fetch assignments to dispatch notifications
       const { data: assignments } = await supabase
         .from('assignments')
         .select('giver_user_id, recipient_user_id')
@@ -491,7 +539,6 @@ export default function Home() {
           }
         }
 
-        // Call email notification API route
         try {
           await fetch('/api/notify-draw', {
             method: 'POST',
@@ -499,7 +546,7 @@ export default function Home() {
             body: JSON.stringify({ notifications: notificationsList }),
           })
         } catch {
-          // Ignore email API errors if missing keys
+          // Ignorar error si no hay mail server configurado
         }
       }
 
