@@ -1,8 +1,225 @@
 {
-  "users": {},
-  "events": {},
-  "eventsByCode": {},
-  "membersByEvent": {},
-  "prefsByEvent": {},
-  "assignmentsByEvent": {}
+  "users": {
+    "testuser_1789076194945": {
+      "id": "usr_testuser_1789076194945",
+      "username": "testuser_1789076194945",
+      "password": "123456",
+      "display_name": "Tester",
+      "created_at": "2026-09-10T21:36:36.109Z"
+    },
+    "testuser_1789076211749": {
+      "id": "usr_testuser_1789076211749",
+      "username": "testuser_1789076211749",
+      "password": "123456",
+      "display_name": "Tester",
+      "created_at": "2026-09-10T21:36:52.533Z",
+      "preferences": [
+        "Racing",
+        "Independiente",
+        "San Lorenzo"
+      ],
+      "shirt_size": "XXL"
+    },
+    "testuser_1789076211749_2": {
+      "id": "usr_testuser_1789076211749_2",
+      "username": "testuser_1789076211749_2",
+      "password": "123456",
+      "display_name": "Tester 2",
+      "created_at": "2026-09-10T21:37:00.828Z",
+      "preferences": [
+        "River",
+        "Boca",
+        "Velez"
+      ],
+      "shirt_size": "M"
+    },
+    "testuser_1789076249328": {
+      "id": "usr_testuser_1789076249328",
+      "username": "testuser_1789076249328",
+      "password": "123456",
+      "display_name": "Tester",
+      "created_at": "2026-09-10T21:37:30.179Z",
+      "preferences": [
+        "Racing",
+        "Independiente",
+        "San Lorenzo"
+      ],
+      "shirt_size": "XXL"
+    },
+    "testuser_1789076249328_2": {
+      "id": "usr_testuser_1789076249328_2",
+      "username": "testuser_1789076249328_2",
+      "password": "123456",
+      "display_name": "Tester 2",
+      "created_at": "2026-09-10T21:37:38.716Z",
+      "preferences": [
+        "River",
+        "Boca",
+        "Velez"
+      ],
+      "shirt_size": "M"
+    }
+  },
+  "events": {
+    "ev_1789076213285": {
+      "id": "ev_1789076213285",
+      "code": "SZ4049",
+      "name": "Torneo Talles",
+      "gift_type": "Camisetas",
+      "theme": "futbol",
+      "budget_min": 10000,
+      "budget_max": 20000,
+      "event_date": null,
+      "rules": "",
+      "preference_count": 3,
+      "status": "open",
+      "organizer_id": "usr_testuser_1789076211749",
+      "created_at": "2026-09-10T21:36:53.285Z"
+    },
+    "ev_1789076250986": {
+      "id": "ev_1789076250986",
+      "code": "SZ5151",
+      "name": "Torneo Talles",
+      "gift_type": "Camisetas",
+      "theme": "futbol",
+      "budget_min": 10000,
+      "budget_max": 20000,
+      "event_date": null,
+      "rules": "",
+      "preference_count": 3,
+      "status": "drawn",
+      "organizer_id": "usr_testuser_1789076249328",
+      "created_at": "2026-09-10T21:37:30.986Z"
+    }
+  },
+  "eventsByCode": {
+    "SZ4049": "ev_1789076213285",
+    "SZ5151": "ev_1789076250986"
+  },
+  "membersByEvent": {
+    "ev_1789076213285": [
+      {
+        "event_id": "ev_1789076213285",
+        "user_id": "usr_testuser_1789076211749",
+        "display_name": "Tester",
+        "role": "organizer",
+        "shirt_size": "XXL"
+      },
+      {
+        "event_id": "ev_1789076213285",
+        "user_id": "usr_testuser_1789076211749_2",
+        "display_name": "Tester 2",
+        "role": "participant",
+        "shirt_size": "M"
+      }
+    ],
+    "ev_1789076250986": [
+      {
+        "event_id": "ev_1789076250986",
+        "user_id": "usr_testuser_1789076249328",
+        "display_name": "Tester",
+        "role": "organizer",
+        "shirt_size": "XXL"
+      },
+      {
+        "event_id": "ev_1789076250986",
+        "user_id": "usr_testuser_1789076249328_2",
+        "display_name": "Tester 2",
+        "role": "participant",
+        "shirt_size": "M"
+      }
+    ]
+  },
+  "prefsByEvent": {
+    "ev_1789076213285": [
+      {
+        "event_id": "ev_1789076213285",
+        "user_id": "usr_testuser_1789076211749",
+        "position": 1,
+        "value": "Racing"
+      },
+      {
+        "event_id": "ev_1789076213285",
+        "user_id": "usr_testuser_1789076211749",
+        "position": 2,
+        "value": "Independiente"
+      },
+      {
+        "event_id": "ev_1789076213285",
+        "user_id": "usr_testuser_1789076211749",
+        "position": 3,
+        "value": "San Lorenzo"
+      },
+      {
+        "event_id": "ev_1789076213285",
+        "user_id": "usr_testuser_1789076211749_2",
+        "position": 1,
+        "value": "River"
+      },
+      {
+        "event_id": "ev_1789076213285",
+        "user_id": "usr_testuser_1789076211749_2",
+        "position": 2,
+        "value": "Boca"
+      },
+      {
+        "event_id": "ev_1789076213285",
+        "user_id": "usr_testuser_1789076211749_2",
+        "position": 3,
+        "value": "Velez"
+      }
+    ],
+    "ev_1789076250986": [
+      {
+        "event_id": "ev_1789076250986",
+        "user_id": "usr_testuser_1789076249328",
+        "position": 1,
+        "value": "Racing"
+      },
+      {
+        "event_id": "ev_1789076250986",
+        "user_id": "usr_testuser_1789076249328",
+        "position": 2,
+        "value": "Independiente"
+      },
+      {
+        "event_id": "ev_1789076250986",
+        "user_id": "usr_testuser_1789076249328",
+        "position": 3,
+        "value": "San Lorenzo"
+      },
+      {
+        "event_id": "ev_1789076250986",
+        "user_id": "usr_testuser_1789076249328_2",
+        "position": 1,
+        "value": "River"
+      },
+      {
+        "event_id": "ev_1789076250986",
+        "user_id": "usr_testuser_1789076249328_2",
+        "position": 2,
+        "value": "Boca"
+      },
+      {
+        "event_id": "ev_1789076250986",
+        "user_id": "usr_testuser_1789076249328_2",
+        "position": 3,
+        "value": "Velez"
+      }
+    ]
+  },
+  "assignmentsByEvent": {
+    "ev_1789076250986": [
+      {
+        "event_id": "ev_1789076250986",
+        "giver_user_id": "usr_testuser_1789076249328",
+        "recipient_user_id": "usr_testuser_1789076249328_2"
+      },
+      {
+        "event_id": "ev_1789076250986",
+        "giver_user_id": "usr_testuser_1789076249328_2",
+        "recipient_user_id": "usr_testuser_1789076249328"
+      }
+    ]
+  }
 }

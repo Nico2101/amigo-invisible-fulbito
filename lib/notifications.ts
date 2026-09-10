@@ -14,6 +14,7 @@ export function generateWhatsAppLink(
   preferences: string[],
   eventName: string,
   eventCode: string,
+  shirtSize?: string,
   phone?: string
 ): string {
   const prefsText =
@@ -21,10 +22,13 @@ export function generateWhatsAppLink(
       ? preferences.map((p, i) => `   ${i + 1}. ${p}`).join('\n')
       : '   (Sin restricciones indicadas)'
 
+  const sizeText = shirtSize ? `👕 *Talle de remera:* ${shirtSize}\n\n` : ''
+
   const text =
     `⚽ *Amigo Invisible · ${eventName}*\n\n` +
     `¡Hola *${giverName}*! Ya se realizó el sorteo.\n\n` +
     `🎁 Te tocó regalarle a: *${recipientName}*\n\n` +
+    sizeText +
     `🚫 *Camisetas NO deseadas por ${recipientName}:*\n${prefsText}\n\n` +
     `💰 *Presupuesto sugerido:* $50.000 - $100.000\n` +
     `🤫 *Mantené el secreto en el grupo.*\n\n` +

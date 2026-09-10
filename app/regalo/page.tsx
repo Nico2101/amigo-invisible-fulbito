@@ -24,6 +24,7 @@ interface EventRow {
 interface ResultData {
   recipientName: string
   preferences: string[]
+  shirtSize?: string
   eventName: string
   eventCode: string
   eventDate: string | null
@@ -180,6 +181,23 @@ function RegaloContent({
           {isRevealed ? (
             <>
               <div className="recipient">{result.recipientName}</div>
+              {result.shirtSize && (
+                <div style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  background: 'rgba(34, 197, 94, 0.15)',
+                  border: '1px solid rgba(34, 197, 94, 0.4)',
+                  color: '#4ade80',
+                  padding: '6px 16px',
+                  borderRadius: 999,
+                  fontWeight: 600,
+                  fontSize: 16,
+                  marginBottom: 14
+                }}>
+                  👕 Talle de remera: <strong style={{ color: '#fff', fontSize: 18 }}>{result.shirtSize}</strong>
+                </div>
+              )}
               <button className="button ghost small-button" onClick={() => setIsRevealed(false)}>
                 🙈 Ocultar nombre
               </button>
@@ -198,6 +216,14 @@ function RegaloContent({
       </div>
 
       <div className="result-grid">
+        <div className="result-card">
+          <span>👕 TALLE DE REMERA</span>
+          <h3 style={{ fontSize: 26, color: '#4ade80' }}>
+            {result.shirtSize || 'No especificado'}
+          </h3>
+          <p>Talle de camiseta solicitado por {result.recipientName}.</p>
+        </div>
+
         <div className="result-card">
           <span>🚫 CAMISETAS NO DESEADAS</span>
           <h3>Lista a evitar</h3>

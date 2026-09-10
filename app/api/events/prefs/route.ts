@@ -11,31 +11,31 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Faltan event_id y user_id' }, { status: 400 })
     }
 
-    const prefs = await store.getPreferences(event_id, user_id)
-    return NextResponse.json(prefs)
+    const result = await store.getPreferencesAndSize(event_id, user_id)
+    return NextResponse.json(result)
   } catch (err) {
     console.error('[API /api/events/prefs GET] ❌ Error:', err)
     return NextResponse.json({ error: String(err) }, { status: 500 })
   }
 }
 
-// POST /api/events/prefs — Guardar preferencias
+// POST /api/events/prefs — Guardar preferencias y talle
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
     console.log('[API /api/events/prefs POST] Body:', JSON.stringify(body))
 
-    const { event_id, user_id, preferences } = body
+    const { event_id, user_id, preferences, shirt_size } = body
 
     if (!event_id || !user_id || !Array.isArray(preferences)) {
       return NextResponse.json({ error: 'Faltan campos obligatorios' }, { status: 400 })
     }
 
-    await store.savePreferences(event_id, user_id, preferences)
+    await store.savePreferences(event_id, user_id, preferences, shirt_size)
     const progress = await store.getProgress(event_id)
 
-    console.log(`[API /api/events/prefs] ✅ Preferencias guardadas. Progreso: ${progress.completed}/${progress.total}`)
-    return NextResponse.json({ success: true, progress })
+    console.log(`[API /api/events/prefs] ✅ Preferencias y talle (${shirt_size || 'N/A'}) guardados. Progreso: ${progress.completed}/${progress.total}`)
+    return NextResponse.json({ success: true, progress, shirt_size: shirt_size || '' })
   } catch (err) {
     console.error('[API /api/events/prefs POST] ❌ Error:', err)
     return NextResponse.json({ error: String(err) }, { status: 500 })

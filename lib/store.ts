@@ -23,6 +23,7 @@ export interface StoreMember {
   user_id: string
   display_name: string
   role: 'organizer' | 'participant'
+  shirt_size?: string
   joined_at: string
 }
 
@@ -45,6 +46,7 @@ export interface StoreUser {
   password: string
   display_name: string
   preferences?: string[]
+  shirt_size?: string
   created_at: string
 }
 
@@ -338,24 +340,29 @@ export async function addMember(member: StoreMember): Promise<void> {
   }
   data.membersByEvent[member.event_id] = list
 
-  // Si el usuario ya tiene preferencias registradas en su cuenta, aplicarlas automáticamente al evento
+  // Si el usuario ya tiene preferencias o talle registrados en su cuenta, aplicarlos automáticamente al evento
   const user = Object.values(data.users || {}).find(u => u.id === member.user_id)
-  if (user && user.preferences && user.preferences.length >= 3) {
-    let eventPrefs = data.prefsByEvent[member.event_id] || []
-    const hasEventPrefs = eventPrefs.some(p => p.user_id === member.user_id)
-    if (!hasEventPrefs) {
-      user.preferences.forEach((val, idx) => {
-        if (val.trim()) {
-          eventPrefs.push({ event_id: member.event_id, user_id: member.user_id, position: idx + 1, value: val.trim() })
-        }
-      })
-      data.prefsByEvent[member.event_id] = eventPrefs
-      console.log(`[Store] ✅ Preferencias heredadas automáticamente para "${member.display_name}" en evento ${member.event_id}`)
+  if (user) {
+    if (user.shirt_size && !member.shirt_size) {
+      member.shirt_size = user.shirt_size
+    }
+    if (user.preferences && user.preferences.length >= 3) {
+      let eventPrefs = data.prefsByEvent[member.event_id] || []
+      const hasEventPrefs = eventPrefs.some(p => p.user_id === member.user_id)
+      if (!hasEventPrefs) {
+        user.preferences.forEach((val, idx) => {
+          if (val.trim()) {
+            eventPrefs.push({ event_id: member.event_id, user_id: member.user_id, position: idx + 1, value: val.trim() })
+          }
+        })
+        data.prefsByEvent[member.event_id] = eventPrefs
+        console.log(`[Store] ✅ Preferencias heredadas automáticamente para "${member.display_name}" en evento ${member.event_id}`)
+      }
     }
   }
 
   await saveData(data)
-  console.log(`[Store] Miembro "${member.display_name}" guardado en evento ${member.event_id}`)
+  console.log(`[Store] Miembro "${member.display_name}" guardado en evento ${member.event_id} (talle: ${member.shirt_size || 'N/A'})`)
 }
 
 export async function getMembers(eventId: string): Promise<StoreMember[]> {
@@ -363,7 +370,7 @@ export async function getMembers(eventId: string): Promise<StoreMember[]> {
   return data.membersByEvent[eventId] || []
 }
 
-export async function savePreferences(eventId: string, userId: string, values: string[]): Promise<void> {
+export async function savePreferences(eventId: string, userId: string, values: string[], shirtSize?: string): Promise<void> {
   const data = await loadData(true)
   let list = data.prefsByEvent[eventId] || []
   list = list.filter(p => p.user_id !== userId)
@@ -376,15 +383,29 @@ export async function savePreferences(eventId: string, userId: string, values: s
   })
   data.prefsByEvent[eventId] = list
 
+  const cleanSize = (shirtSize || '').trim().toUpperCase()
+
+  // Actualizar talle de remera en el miembro del evento
+  const members = data.membersByEvent[eventId] || []
+  const member = members.find(m => m.user_id === userId)
+  if (member && cleanSize) {
+    member.shirt_size = cleanSize
+  }
+
   // Guardar también en la cuenta del usuario para que se recuerden en todos sus eventos
   const user = Object.values(data.users || {}).find(u => u.id === userId)
-  if (user && cleaned.length >= 3) {
-    user.preferences = cleaned
+  if (user) {
+    if (cleaned.length >= 3) {
+      user.preferences = cleaned
+    }
+    if (cleanSize) {
+      user.shirt_size = cleanSize
+    }
     data.users[user.username] = user
   }
 
   await saveData(data)
-  console.log(`[Store] Preferencias guardadas para user=${userId} en evento=${eventId} y en su cuenta:`, cleaned)
+  console.log(`[Store] Preferencias y talle (${cleanSize}) guardados para user=${userId} en evento=${eventId} y en su cuenta:`, cleaned)
 }
 
 export async function getPreferences(eventId: string, userId: string): Promise<string[]> {
@@ -417,6 +438,25 @@ export async function getPreferences(eventId: string, userId: string): Promise<s
   }
 
   return currentPrefs
+}
+
+export async function getPreferencesAndSize(eventId: string, userId: string): Promise<{ preferences: string[]; shirt_size: string }> {
+  const prefs = await getPreferences(eventId, userId)
+  const data = await loadData(true)
+  const members = data.membersByEvent[eventId] || []
+  const member = members.find(m => m.user_id === userId)
+  const user = Object.values(data.users || {}).find(u => u.id === userId)
+
+  let size = member?.shirt_size || user?.shirt_size || ''
+  if (!member?.shirt_size && user?.shirt_size && member) {
+    member.shirt_size = user.shirt_size
+    await saveData(data)
+  }
+
+  return {
+    preferences: prefs,
+    shirt_size: size,
+  }
 }
 
 export async function getAllPreferences(eventId: string): Promise<StorePreference[]> {
@@ -476,7 +516,7 @@ export async function runDraw(eventId: string): Promise<StoreAssignment[]> {
   return assignments
 }
 
-export async function getMyAssignment(eventId: string, userId: string): Promise<{ recipientName: string; preferences: string[] } | null> {
+export async function getMyAssignment(eventId: string, userId: string): Promise<{ recipientName: string; preferences: string[]; shirtSize: string } | null> {
   const data = await loadData(true)
   const assignments = data.assignmentsByEvent[eventId] || []
   const mine = assignments.find(a => a.giver_user_id === userId)
@@ -491,9 +531,13 @@ export async function getMyAssignment(eventId: string, userId: string): Promise<
     .sort((a, b) => a.position - b.position)
     .map(p => p.value)
 
+  const recipientUser = Object.values(data.users || {}).find(u => u.id === recipient.user_id)
+  const shirtSize = recipient.shirt_size || recipientUser?.shirt_size || ''
+
   return {
     recipientName: recipient.display_name,
     preferences: prefs,
+    shirtSize,
   }
 }
 

@@ -35,6 +35,7 @@ interface MemberRow {
   role: 'organizer' | 'participant'
   joined_at: string
   has_preferences?: boolean
+  shirt_size?: string
 }
 
 async function api<T>(url: string, options?: RequestInit): Promise<T> {
@@ -64,8 +65,9 @@ export default function EventPage() {
   const [busy, setBusy] = useState(false)
   const [screen, setScreen] = useState<'loading' | 'auth' | 'join' | 'prefs' | 'room'>('loading')
 
-  // Form states for prefs
+  // Form states for prefs & size
   const [prefs, setPrefs] = useState(['', '', ''])
+  const [shirtSize, setShirtSize] = useState('L')
 
   // Organizer settings modal
   const [showConfigModal, setShowConfigModal] = useState(false)
@@ -120,7 +122,13 @@ export default function EventPage() {
       if (isMember) {
         // Consultar preferencias del usuario
         try {
-          const myPrefs = await api<string[]>(`/api/events/prefs?event_id=${ev.id}&user_id=${user.id}`)
+          const res = await api<{ preferences?: string[]; shirt_size?: string } | string[]>(
+            `/api/events/prefs?event_id=${ev.id}&user_id=${user.id}`
+          )
+          const myPrefs = Array.isArray(res) ? res : res?.preferences || []
+          const loadedSize = (!Array.isArray(res) && res?.shirt_size) ? res.shirt_size : (user.shirt_size || 'L')
+          setShirtSize(loadedSize)
+
           const loadedPrefs = ['', '', '']
           if (myPrefs && myPrefs.length > 0) {
             myPrefs.forEach((p, i) => {
@@ -144,6 +152,9 @@ export default function EventPage() {
             setScreen('prefs')
           }
         } catch {
+          if (user.shirt_size) {
+            setShirtSize(user.shirt_size)
+          }
           if (user.preferences && user.preferences.length >= 3) {
             const loadedPrefs = ['', '', '']
             user.preferences.forEach((p, i) => {
@@ -283,7 +294,7 @@ export default function EventPage() {
     }
   }
 
-  // Guardar preferencias de camisetas
+  // Guardar preferencias de camisetas y talle
   async function handleSavePrefs() {
     if (!event || !currentUser) return
     const cleaned = prefs.map(p => p.trim())
@@ -292,21 +303,32 @@ export default function EventPage() {
       return
     }
 
+    const cleanSize = (shirtSize || '').trim().toUpperCase()
+    if (!cleanSize) {
+      notify('Por favor indicá tu talle de remera.', 'error')
+      return
+    }
+
     setBusy(true)
     try {
       await api('/api/events/prefs', {
         method: 'POST',
-        body: JSON.stringify({ event_id: event.id, user_id: currentUser.id, preferences: cleaned }),
+        body: JSON.stringify({
+          event_id: event.id,
+          user_id: currentUser.id,
+          preferences: cleaned,
+          shirt_size: cleanSize,
+        }),
       })
 
       // Guardar también en la sesión local
-      const updatedUser: AuthUser = { ...currentUser, preferences: cleaned }
+      const updatedUser: AuthUser = { ...currentUser, preferences: cleaned, shirt_size: cleanSize }
       setCurrentUser(updatedUser)
       saveStoredUser(updatedUser)
 
       await refreshMembers(event.id)
       setScreen('room')
-      notify('¡Preferencias guardadas exitosamente!', 'success')
+      notify('¡Preferencias y talle guardados exitosamente!', 'success')
     } catch (err) {
       notify(err instanceof Error ? err.message : 'Error al guardar preferencias', 'error')
     } finally {
@@ -600,11 +622,74 @@ export default function EventPage() {
                 </div>
               ))}
 
+              {/* Selección de talle de remera */}
+              <div
+                style={{
+                  marginTop: 24,
+                  padding: '18px 16px',
+                  background: '#092113',
+                  border: '1px solid #1a4f2d',
+                  borderRadius: 16,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                  <span style={{ fontSize: 24 }}>👕</span>
+                  <div>
+                    <h3 style={{ margin: 0, fontSize: 16, color: '#e2f5e8', fontWeight: 800 }}>
+                      Tu talle de remera / camiseta *
+                    </h3>
+                    <p style={{ margin: '2px 0 0', fontSize: 12, color: '#88a694' }}>
+                      Elegí tu talle para que tu amigo invisible te regale el tamaño perfecto.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Botones de talles rápidos */}
+                <div className="preset-group" style={{ marginTop: 12 }}>
+                  {['S', 'M', 'L', 'XL', 'XXL', '3XL'].map(size => (
+                    <button
+                      key={size}
+                      type="button"
+                      className={`preset-btn ${shirtSize === size ? 'active' : ''}`}
+                      onClick={() => setShirtSize(size)}
+                      style={{
+                        minWidth: 46,
+                        fontWeight: shirtSize === size ? 900 : 700,
+                        fontSize: 14,
+                        padding: '8px 14px',
+                      }}
+                    >
+                      {size}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Campo para talle especial o custom */}
+                <div style={{ marginTop: 12 }}>
+                  <label style={{ fontSize: 12, color: '#88a694', marginBottom: 4 }}>
+                    O escribí otro talle (ej. Niños 14, 4XL, etc.):
+                    <input
+                      value={shirtSize}
+                      onChange={e => setShirtSize(e.target.value.toUpperCase())}
+                      placeholder="Ej. L, XL, 2XL"
+                      maxLength={10}
+                      style={{ marginTop: 4, textTransform: 'uppercase', fontWeight: 700 }}
+                    />
+                  </label>
+                </div>
+
+                {shirtSize && (
+                  <div style={{ marginTop: 8, fontSize: 13, color: '#6ee7b7', fontWeight: 700 }}>
+                    ✓ Talle seleccionado: <strong>{shirtSize}</strong>
+                  </div>
+                )}
+              </div>
+
               <button
                 className="button primary large full"
                 onClick={handleSavePrefs}
                 disabled={busy}
-                style={{ marginTop: 20 }}
+                style={{ marginTop: 24 }}
               >
                 {busy ? 'Guardando…' : 'Guardar y entrar a la sala →'}
               </button>
@@ -710,7 +795,9 @@ export default function EventPage() {
                         <span>{member.role === 'organizer' ? '⭐ Organizador' : '⚽ Jugador'}</span>
                       </div>
                       <span className={`pref-badge ${member.has_preferences ? 'complete' : 'pending'}`}>
-                        {member.has_preferences ? '✓ Listo' : '⏳ Pendiente'}
+                        {member.has_preferences
+                          ? `✓ Listo ${member.shirt_size ? `(${member.shirt_size})` : ''}`
+                          : '⏳ Pendiente'}
                       </span>
                     </div>
                   ))}
@@ -777,12 +864,12 @@ export default function EventPage() {
                             className="button whatsapp small-button"
                             onClick={async () => {
                               try {
-                                const r = await api<{ recipientName: string; preferences: string[] }>('/api/events/result', {
+                                const r = await api<{ recipientName: string; preferences: string[]; shirtSize?: string }>('/api/events/result', {
                                   method: 'POST',
                                   body: JSON.stringify({ event_id: event.id, user_id: m.user_id }),
                                 })
                                 window.open(
-                                  generateWhatsAppLink(m.display_name, r.recipientName, r.preferences, event.name, event.code),
+                                  generateWhatsAppLink(m.display_name, r.recipientName, r.preferences, event.name, event.code, r.shirtSize),
                                   '_blank'
                                 )
                               } catch {
@@ -798,11 +885,11 @@ export default function EventPage() {
                   </div>
                 )}
 
-                {/* Botón para cambiar mis preferencias */}
+                {/* Botón para cambiar mis preferencias y talle */}
                 {event.status === 'open' && (
                   <div style={{ marginTop: 20, textAlign: 'center' }}>
                     <button className="button ghost small-button" onClick={() => setScreen('prefs')}>
-                      ✏️ Modificar mis camisetas no deseadas
+                      ✏️ Modificar mis camisetas no deseadas y talle
                     </button>
                   </div>
                 )}

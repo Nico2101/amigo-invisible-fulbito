@@ -12,12 +12,17 @@ export async function GET(req: NextRequest) {
     const members = await store.getMembers(eventId)
     const progress = await store.getProgress(eventId)
 
-    // Enriquecer con estado de preferencias
+    // Enriquecer con estado de preferencias y talle
     const enriched = await Promise.all(
-      members.map(async m => ({
-        ...m,
-        has_preferences: (await store.getPreferences(eventId, m.user_id)).length >= 3,
-      }))
+      members.map(async m => {
+        const u = await store.getUserById(m.user_id)
+        const size = m.shirt_size || u?.shirt_size || ''
+        return {
+          ...m,
+          shirt_size: size,
+          has_preferences: (await store.getPreferences(eventId, m.user_id)).length >= 3,
+        }
+      })
     )
 
     return NextResponse.json({ members: enriched, progress })
