@@ -1,15 +1,23 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { User } from '@supabase/supabase-js'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import {
+  generateWhatsAppLink,
+  generateGroupWhatsAppLink,
+  DrawAssignmentNotification,
+} from '@/lib/notifications'
 
 type Screen = 'home' | 'create' | 'join' | 'prefs' | 'room' | 'result'
-type PendingAction =
-  | { kind: 'create'; name: string; eventName: string; eventDate: string; email: string }
-  | { kind: 'join'; code: string; name: string; email: string }
 
-type EventRow = {
+interface LocalUser {
+  id: string
+  name: string
+  email: string
+  phone: string
+}
+
+interface EventRow {
   id: string
   code: string
   name: string
@@ -24,508 +32,505 @@ type EventRow = {
   organizer_id: string
 }
 
-type MemberRow = {
+interface MemberRow {
   event_id: string
   user_id: string
   display_name: string
   role: 'organizer' | 'participant'
   joined_at: string
+  email?: string
+  phone?: string
+  has_preferences?: boolean
 }
 
-type ResultRow = {
-  name: string
+interface ResultRow {
+  recipientName: string
   preferences: string[]
 }
 
-const supabase = createClient()
-const pendingKey = 'amigo-invisible.pending-auth.v3'
+const USER_SESSION_KEY = 'amigo-invisible.user-session.v4'
 
-
-function friendlyError(error: unknown) {
-  const message = error instanceof Error ? error.message : String(error || 'Ocurrió un error inesperado.')
-  if (/invalid.*email/i.test(message)) return 'El email no parece válido.'
-  if (/redirect.*url|redirect.*not allowed/i.test(message)) {
-    return 'Supabase está rechazando la URL de retorno. Revisá Site URL y Redirect URLs.'
+function getOrCreateUserId(): string {
+  if (typeof window === 'undefined') return ''
+  let id = localStorage.getItem('amigo_user_id')
+  if (!id) {
+    id = crypto.randomUUID()
+    localStorage.setItem('amigo_user_id', id)
   }
-  return message
+  return id
 }
 
 export default function Home() {
+  const supabase = useMemo(() => createClient(), [])
   const [screen, setScreen] = useState<Screen>('home')
-  const [user, setUser] = useState<User | null>(null)
-  const [email, setEmail] = useState('')
+  const [currentUser, setCurrentUser] = useState<LocalUser | null>(null)
+
+  // Inputs
   const [name, setName] = useState('')
+  const [email, setEmail] = useState('')
+  const [phone, setPhone] = useState('')
   const [eventName, setEventName] = useState('Amigo Invisible · Fulbito de los Jueves')
   const [eventDate, setEventDate] = useState('')
   const [code, setCode] = useState('')
+
+  // Event Data
   const [event, setEvent] = useState<EventRow | null>(null)
   const [members, setMembers] = useState<MemberRow[]>([])
   const [prefs, setPrefs] = useState(['', '', ''])
   const [result, setResult] = useState<ResultRow | null>(null)
+
+  // Reveal state
+  const [isRevealed, setIsRevealed] = useState(false)
+
+  // Toast / Messages
   const [message, setMessage] = useState('')
   const [messageType, setMessageType] = useState<'info' | 'error' | 'success'>('info')
   const [busy, setBusy] = useState(false)
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login')
-  const [password, setPassword] = useState('')
-  const [progress, setProgress] = useState({ total: 0, completed: 0, status: 'open' as EventRow['status'] })
-  const pendingInFlight = useRef(false)
 
-  const clearMessage = () => setMessage('')
+  // Progress
+  const [progress, setProgress] = useState({ total: 0, completed: 0, status: 'open' as EventRow['status'] })
 
   const notify = (text: string, type: 'info' | 'error' | 'success' = 'info') => {
     setMessage(text)
     setMessageType(type)
   }
 
-  const savePending = (pending: PendingAction) => {
-    localStorage.setItem(pendingKey, JSON.stringify(pending))
-  }
-
-  const readPending = (): PendingAction | null => {
+  // Load stored session on mount
+  useEffect(() => {
     try {
-      const raw = localStorage.getItem(pendingKey)
-      return raw ? (JSON.parse(raw) as PendingAction) : null
+      const stored = localStorage.getItem(USER_SESSION_KEY)
+      if (stored) {
+        const parsed: LocalUser = JSON.parse(stored)
+        setCurrentUser(parsed)
+        setName(parsed.name)
+        setEmail(parsed.email || '')
+        setPhone(parsed.phone || '')
+      }
     } catch {
-      localStorage.removeItem(pendingKey)
-      return null
+      localStorage.removeItem(USER_SESSION_KEY)
     }
-  }
-
-  const consumePending = () => {
-    const pending = readPending()
-    localStorage.removeItem(pendingKey)
-    return pending
-  }
-
-  const refreshMembers = useCallback(async (eventId: string) => {
-    const { data, error } = await supabase
-      .from('event_members')
-      .select('event_id,user_id,display_name,role,joined_at')
-      .eq('event_id', eventId)
-      .order('joined_at')
-
-    if (error) throw error
-    setMembers((data || []) as MemberRow[])
   }, [])
 
-  const refreshProgress = useCallback(async (eventId: string) => {
-    const { data, error } = await supabase.rpc('get_event_progress', { p_event_id: eventId })
-    if (error) throw error
-    const row = Array.isArray(data) ? data[0] : data
-    setProgress({
-      total: Number(row?.total_members || 0),
-      completed: Number(row?.completed_members || 0),
-      status: (row?.status || 'open') as EventRow['status'],
-    })
-  }, [])
-
-  const loadMyResult = useCallback(async (eventId: string) => {
-    const { data, error } = await supabase.rpc('get_my_assignment', { p_event_id: eventId })
-    if (error) throw error
-    const row = Array.isArray(data) ? data[0] : data
-    if (!row?.recipient_name) {
-      throw new Error('Todavía no hay una asignación disponible para tu usuario.')
-    }
-    setResult({
-      name: String(row.recipient_name),
-      preferences: Array.isArray(row.preferences) ? row.preferences.map(String) : [],
-    })
-    setScreen('result')
-  }, [])
-
-  const continuePending = useCallback(
-    async (authUser: User) => {
-      if (pendingInFlight.current) return
-      const pending = readPending()
-      if (!pending) return
-      pendingInFlight.current = true
-      localStorage.removeItem(pendingKey)
-
-      try {
-        if (pending.kind === 'create') {
-          setName(pending.name)
-          setEventName(pending.eventName)
-          setEventDate(pending.eventDate)
-          setEmail(pending.email)
-          await createEvent(authUser, pending)
-        } else {
-          setName(pending.name)
-          setCode(pending.code)
-          setEmail(pending.email)
-          await joinEvent(authUser, pending)
-        }
-      } catch (error) {
-        notify(friendlyError(error), 'error')
-        setScreen(pending.kind === 'create' ? 'create' : 'join')
-      } finally {
-        pendingInFlight.current = false
-      }
-    },
-    [],
-  )
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
-    const authError = params.get('auth_error')
-    if (authError) {
-      notify(authError, 'error')
-      window.history.replaceState({}, '', window.location.pathname)
-    }
-
-    supabase.auth.getUser().then(({ data }) => {
-      setUser(data.user)
-      if (data.user) void continuePending(data.user)
-    })
-
-    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
-      const nextUser = session?.user ?? null
-      setUser(nextUser)
-      if (nextUser) void continuePending(nextUser)
-    })
-
-    return () => data.subscription.unsubscribe()
-  }, [continuePending])
-
-  useEffect(() => {
-    if (!event || !user) return
-    void refreshMembers(event.id)
-    if (event.organizer_id === user.id) {
-      void refreshProgress(event.id)
-    }
-  }, [event?.id, user?.id, refreshMembers, refreshProgress])
-
-  useEffect(() => {
-    if (!message) return
-    const timer = window.setTimeout(() => setMessage(''), 6500)
-    return () => window.clearTimeout(timer)
-  }, [message])
-
-  async function authenticate(kind: 'create' | 'join') {
-    const cleanEmail = email.trim().toLowerCase()
-    const cleanName = name.trim()
-    const cleanCode = code.trim().toUpperCase()
-
-    if (!cleanEmail || !password) {
-      notify('Ingresá email y contraseña para continuar.', 'error')
-      return
-    }
-    if (password.length < 6) {
-      notify('La contraseña debe tener al menos 6 caracteres.', 'error')
-      return
-    }
-    if (kind === 'create' && !cleanName) {
-      notify('Ingresá tu nombre antes de continuar.', 'error')
-      return
-    }
-    if (kind === 'join' && (!cleanCode || !cleanName)) {
-      notify('Completá código, nombre, email y contraseña.', 'error')
-      return
-    }
-
-    setBusy(true)
-    try {
-      const pending: PendingAction =
-        kind === 'create'
-          ? { kind, name: cleanName, eventName: eventName.trim(), eventDate, email: cleanEmail }
-          : { kind, code: cleanCode, name: cleanName, email: cleanEmail }
-      savePending(pending)
-
-      if (authMode === 'register') {
-        const { data, error } = await supabase.auth.signUp({
-          email: cleanEmail,
-          password,
-          options: { data: { display_name: cleanName } },
-        })
-        if (error) throw error
-        if (!data.session) {
-          throw new Error('La cuenta fue creada, pero Supabase está pidiendo confirmar el email. En Authentication → Providers → Email desactivá “Confirm email” para usar este login sin enviar correos.')
-        }
-        setUser(data.user)
-        await continuePending(data.user)
-      } else {
-        const { data, error } = await supabase.auth.signInWithPassword({
-          email: cleanEmail,
-          password,
-        })
-        if (error) throw error
-        if (!data.user) throw new Error('No se pudo iniciar sesión.')
-        setUser(data.user)
-        await continuePending(data.user)
-      }
-    } catch (error) {
-      const message = friendlyError(error)
-      if (/invalid login credentials/i.test(message)) {
-        notify('Email o contraseña incorrectos.', 'error')
-      } else {
-        notify(message, 'error')
-      }
-    } finally {
-      setBusy(false)
-    }
+  const saveUserSession = (user: LocalUser) => {
+    setCurrentUser(user)
+    localStorage.setItem(USER_SESSION_KEY, JSON.stringify(user))
   }
 
-  async function createEvent(authUser = user, pending?: PendingAction & { kind: 'create' }) {
-    if (!authUser) {
-      notify('Necesitás ingresar con email antes de crear el evento.', 'error')
-      return
-    }
-
-    const createName = pending && pending.kind === 'create' ? pending.name : name.trim()
-    const createEventName =
-      pending && pending.kind === 'create' ? pending.eventName : eventName.trim()
-    const createDate = pending && pending.kind === 'create' ? pending.eventDate : eventDate
-
-    if (!createName || !createEventName) {
-      setScreen('create')
-      notify('Completá tu nombre y el nombre del evento.', 'error')
-      return
-    }
-
-    setBusy(true)
-    clearMessage()
-
-    try {
-      const payload = {
-        name: createEventName,
-        gift_type: 'Camisetas de fútbol',
-        theme: 'fulbito',
-        budget_min: 50000,
-        budget_max: 100000,
-        event_date: createDate || null,
-        organizer_id: authUser.id,
-        code: '',
-        preference_count: 3,
-        detective_mode: true,
-        anonymous_card: true,
-        rules: 'Clubes internacionales y selecciones nacionales. No clubes argentinos.',
-      }
-
-      let created: EventRow | null = null
-      let lastError: Error | null = null
-
-      for (let attempt = 0; attempt < 5 && !created; attempt++) {
-        payload.code = crypto
-          .getRandomValues(new Uint32Array(3))
-          .reduce((acc, value) => `${acc}${value.toString(36)}`, '')
-          .slice(0, 6)
-          .toUpperCase()
-
-        const { data, error } = await supabase.from('events').insert(payload).select('*').single()
-        if (!error) {
-          created = data as EventRow
-          break
-        }
-        lastError = error
-        if (!/duplicate|unique/i.test(error.message)) break
-      }
-
-      if (!created) throw lastError || new Error('No se pudo crear el evento.')
-
-      const { error: memberError } = await supabase.from('event_members').insert({
-        event_id: created.id,
-        user_id: authUser.id,
-        display_name: createName,
-        role: 'organizer',
-      })
-
-      if (memberError) throw memberError
-
-      setEvent(created)
-      setCode(created.code)
-      setMembers([
-        {
-          event_id: created.id,
-          user_id: authUser.id,
-          display_name: createName,
-          role: 'organizer',
-          joined_at: new Date().toISOString(),
-        },
-      ])
-      setProgress({ total: 1, completed: 0, status: 'open' })
-      setScreen('room')
-      notify('Evento creado. Compartí el código con tu grupo.', 'success')
-    } catch (error) {
-      notify(friendlyError(error), 'error')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function joinEvent(authUser = user, pending?: PendingAction & { kind: 'join' }) {
-    if (!authUser) {
-      notify('Necesitás ingresar con email antes de unirte.', 'error')
-      return
-    }
-
-    const joinCode = (pending?.kind === 'join' ? pending.code : code).trim().toUpperCase()
-    const joinName = (pending?.kind === 'join' ? pending.name : name).trim()
-
-    if (!joinCode || !joinName) {
-      setScreen('join')
-      notify('Completá código y nombre.', 'error')
-      return
-    }
-
-    setBusy(true)
-    clearMessage()
-
-    try {
-      const { data: events, error: lookupError } = await supabase.rpc('lookup_event_by_code', {
-        p_code: joinCode,
-      })
-      if (lookupError) throw lookupError
-
-      const target = Array.isArray(events) ? events[0] : events
-      if (!target?.id) throw new Error('No encontré un evento abierto con ese código.')
-
-      const { data: existing } = await supabase
-        .from('event_members')
-        .select('event_id,user_id')
-        .eq('event_id', target.id)
-        .eq('user_id', authUser.id)
-        .maybeSingle()
-
-      if (!existing) {
-        const { error: memberError } = await supabase.from('event_members').insert({
-          event_id: target.id,
-          user_id: authUser.id,
-          display_name: joinName,
-          role: 'participant',
-        })
-        if (memberError) throw memberError
-      }
-
-      const { data: fullEvent, error: fullEventError } = await supabase
-        .from('events')
-        .select('*')
-        .eq('id', target.id)
-        .single()
-
-      if (fullEventError) throw fullEventError
-
-      setEvent(fullEvent as EventRow)
-      setCode(joinCode)
-      await refreshMembers(target.id)
-
-      const { data: myPrefs } = await supabase
-        .from('preferences')
-        .select('position,value')
-        .eq('event_id', target.id)
-        .eq('user_id', authUser.id)
-        .order('position')
-
-      const nextPrefs = ['','','']
-      ;(myPrefs || []).forEach((item: { position: number; value: string }) => {
-        if (item.position >= 1 && item.position <= 3) nextPrefs[item.position - 1] = item.value
-      })
-      setPrefs(nextPrefs)
-      setScreen(nextPrefs.every(Boolean) ? 'room' : 'prefs')
-      notify(
-        nextPrefs.every(Boolean)
-          ? 'Ya tenías tus preferencias guardadas.'
-          : 'Te uniste. Ahora completá tus 3 preferencias.',
-        'success',
-      )
-    } catch (error) {
-      notify(friendlyError(error), 'error')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function savePreferences() {
-    if (!event || !user) return
-    const cleaned = prefs.map((value) => value.trim())
-    if (cleaned.some((value) => !value)) {
-      notify('Completá las 3 preferencias.', 'error')
-      return
-    }
-
-    setBusy(true)
-    try {
-      const { error: deleteError } = await supabase
-        .from('preferences')
-        .delete()
-        .eq('event_id', event.id)
-        .eq('user_id', user.id)
-      if (deleteError) throw deleteError
-
-      const { error } = await supabase.from('preferences').insert(
-        cleaned.map((value, index) => ({
-          event_id: event.id,
-          user_id: user.id,
-          position: index + 1,
-          value,
-        })),
-      )
-      if (error) throw error
-
-      if (event.organizer_id === user.id) {
-        await refreshProgress(event.id)
-      }
-      setScreen('room')
-      notify('Preferencias guardadas.', 'success')
-    } catch (error) {
-      notify(friendlyError(error), 'error')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function draw() {
-    if (!event) return
-
-    setBusy(true)
-    notify('Cerrando participantes y realizando el sorteo seguro…')
-
-    try {
-      const { error } = await supabase.rpc('run_secret_draw', { p_event_id: event.id })
-      if (error) throw error
-      const { data } = await supabase.from('events').select('*').eq('id', event.id).single()
-      if (data) setEvent(data as EventRow)
-      await loadMyResult(event.id)
-      notify('Sorteo realizado. Tu resultado queda protegido.', 'success')
-    } catch (error) {
-      notify(friendlyError(error), 'error')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function signOut() {
-    await supabase.auth.signOut()
-    setUser(null)
+  const signOut = () => {
+    localStorage.removeItem(USER_SESSION_KEY)
+    setCurrentUser(null)
+    setName('')
+    setEmail('')
+    setPhone('')
     setEvent(null)
     setMembers([])
     setResult(null)
     setScreen('home')
-    localStorage.removeItem(pendingKey)
     notify('Sesión cerrada.', 'success')
   }
 
-  const isOrganizer = Boolean(user && event && event.organizer_id === user.id)
-  const readyToDraw = progress.total >= 2 && progress.completed === progress.total && progress.status === 'open'
+  const refreshMembers = useCallback(async (eventId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('event_members')
+        .select('event_id,user_id,display_name,role,joined_at')
+        .eq('event_id', eventId)
+        .order('joined_at')
+
+      if (error) throw error
+
+      const rawMembers = (data || []) as MemberRow[]
+
+      // Fetch preference completion for each member
+      const { data: prefData } = await supabase
+        .from('preferences')
+        .select('user_id, position')
+        .eq('event_id', eventId)
+
+      const prefCounts: Record<string, number> = {}
+      ;(prefData || []).forEach((p: { user_id: string }) => {
+        prefCounts[p.user_id] = (prefCounts[p.user_id] || 0) + 1
+      })
+
+      const enriched = rawMembers.map((m) => ({
+        ...m,
+        has_preferences: (prefCounts[m.user_id] || 0) >= 3,
+      }))
+
+      setMembers(enriched)
+
+      const completed = enriched.filter((m) => m.has_preferences).length
+      setProgress((prev) => ({
+        ...prev,
+        total: enriched.length,
+        completed,
+      }))
+    } catch (err) {
+      console.warn('Error al cargar miembros:', err)
+    }
+  }, [])
+
+  const loadMyResult = useCallback(async (eventId: string, userId: string) => {
+    try {
+      const { data, error } = await supabase.rpc('get_my_assignment', {
+        p_event_id: eventId,
+        p_user_id: userId,
+      })
+
+      if (!error && Array.isArray(data) && data.length > 0 && data[0].recipient_name) {
+        setResult({
+          recipientName: String(data[0].recipient_name),
+          preferences: Array.isArray(data[0].preferences) ? data[0].preferences.map(String) : [],
+        })
+        setScreen('result')
+        return
+      }
+
+      // Direct fallback query if RPC not applied yet
+      const { data: assignData } = await supabase
+        .from('assignments')
+        .select('recipient_user_id')
+        .eq('event_id', eventId)
+        .eq('giver_user_id', userId)
+        .maybeSingle()
+
+      if (assignData?.recipient_user_id) {
+        const { data: recipientMember } = await supabase
+          .from('event_members')
+          .select('display_name')
+          .eq('event_id', eventId)
+          .eq('user_id', assignData.recipient_user_id)
+          .single()
+
+        const { data: prefData } = await supabase
+          .from('preferences')
+          .select('value')
+          .eq('event_id', eventId)
+          .eq('user_id', assignData.recipient_user_id)
+          .order('position')
+
+        if (recipientMember) {
+          setResult({
+            recipientName: recipientMember.display_name,
+            preferences: (prefData || []).map((p: { value: string }) => p.value),
+          })
+          setScreen('result')
+          return
+        }
+      }
+
+      throw new Error('Todavía no hay un amigo asignado para tu usuario.')
+    } catch (err) {
+      notify(err instanceof Error ? err.message : String(err), 'error')
+    }
+  }, [])
+
+  // Auto-dismiss toast message
+  useEffect(() => {
+    if (!message) return
+    const timer = setTimeout(() => setMessage(''), 6000)
+    return () => clearTimeout(timer)
+  }, [message])
+
+  // --- ACTIONS ---
+
+  async function handleCreateEvent() {
+    const cleanName = name.trim()
+    const cleanEventName = eventName.trim()
+
+    if (!cleanName) {
+      notify('Por favor, ingresá tu nombre.', 'error')
+      return
+    }
+    if (!cleanEventName) {
+      notify('Por favor, ingresá el nombre del evento.', 'error')
+      return
+    }
+
+    setBusy(true)
+
+    const userId = currentUser?.id || getOrCreateUserId()
+    const userSession: LocalUser = { id: userId, name: cleanName, email: email.trim(), phone: phone.trim() }
+    saveUserSession(userSession)
+
+    try {
+      const newCode = crypto.getRandomValues(new Uint32Array(3))
+        .reduce((acc, val) => acc + val.toString(36), '')
+        .slice(0, 6)
+        .toUpperCase()
+
+      const payload = {
+        name: cleanEventName,
+        gift_type: 'Camisetas de fútbol',
+        theme: 'fulbito',
+        budget_min: 50000,
+        budget_max: 100000,
+        event_date: eventDate || null,
+        organizer_id: userId,
+        code: newCode,
+        preference_count: 3,
+        rules: 'Clubes internacionales y selecciones nacionales. No clubes argentinos.',
+      }
+
+      const { data: created, error } = await supabase.from('events').insert(payload).select('*').single()
+      if (error) throw error
+
+      const eventRow = created as EventRow
+
+      await supabase.from('event_members').insert({
+        event_id: eventRow.id,
+        user_id: userId,
+        display_name: cleanName,
+        role: 'organizer',
+      })
+
+      setEvent(eventRow)
+      setCode(eventRow.code)
+      await refreshMembers(eventRow.id)
+      setScreen('prefs')
+      notify('¡Evento creado con éxito! Ahora cargá tus 3 camisetas no deseadas.', 'success')
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Error al crear evento', 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleJoinEvent() {
+    const cleanCode = code.trim().toUpperCase()
+    const cleanName = name.trim()
+
+    if (!cleanCode) {
+      notify('Ingresá el código de 6 caracteres.', 'error')
+      return
+    }
+    if (!cleanName) {
+      notify('Ingresá tu nombre.', 'error')
+      return
+    }
+
+    setBusy(true)
+
+    const userId = currentUser?.id || getOrCreateUserId()
+    const userSession: LocalUser = { id: userId, name: cleanName, email: email.trim(), phone: phone.trim() }
+    saveUserSession(userSession)
+
+    try {
+      // Lookup event
+      const { data: foundEvents, error: lookupError } = await supabase
+        .from('events')
+        .select('*')
+        .eq('code', cleanCode)
+
+      if (lookupError || !foundEvents || foundEvents.length === 0) {
+        throw new Error('No se encontró ningún evento activo con ese código.')
+      }
+
+      const targetEvent = foundEvents[0] as EventRow
+
+      // Check member
+      const { data: existingMember } = await supabase
+        .from('event_members')
+        .select('user_id')
+        .eq('event_id', targetEvent.id)
+        .eq('user_id', userId)
+        .maybeSingle()
+
+      if (!existingMember) {
+        await supabase.from('event_members').insert({
+          event_id: targetEvent.id,
+          user_id: userId,
+          display_name: cleanName,
+          role: 'participant',
+        })
+      }
+
+      setEvent(targetEvent)
+      setCode(targetEvent.code)
+      await refreshMembers(targetEvent.id)
+
+      // Fetch user preferences if existing
+      const { data: myPrefs } = await supabase
+        .from('preferences')
+        .select('position, value')
+        .eq('event_id', targetEvent.id)
+        .eq('user_id', userId)
+        .order('position')
+
+      const nextPrefs = ['', '', '']
+      ;(myPrefs || []).forEach((item: { position: number; value: string }) => {
+        if (item.position >= 1 && item.position <= 3) nextPrefs[item.position - 1] = item.value
+      })
+
+      setPrefs(nextPrefs)
+
+      if (targetEvent.status === 'drawn') {
+        await loadMyResult(targetEvent.id, userId)
+      } else if (nextPrefs.every(Boolean)) {
+        setScreen('room')
+        notify('¡Ya estás en la sala! Tus preferencias están guardadas.', 'success')
+      } else {
+        setScreen('prefs')
+        notify('Te uniste correctamente. Ahora elegí tus 3 no deseados.', 'success')
+      }
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Error al unirte al evento', 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleSavePreferences() {
+    if (!event || !currentUser) return
+
+    const cleaned = prefs.map((p) => p.trim())
+    if (cleaned.some((p) => !p)) {
+      notify('Por favor completá los 3 campos de no deseados.', 'error')
+      return
+    }
+
+    setBusy(true)
+
+    try {
+      await supabase.from('preferences').delete().eq('event_id', event.id).eq('user_id', currentUser.id)
+
+      const { error } = await supabase.from('preferences').insert(
+        cleaned.map((val, idx) => ({
+          event_id: event.id,
+          user_id: currentUser.id,
+          position: idx + 1,
+          value: val,
+        }))
+      )
+
+      if (error) throw error
+
+      await refreshMembers(event.id)
+      setScreen('room')
+      notify('¡Preferencias guardadas exitosamente!', 'success')
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'Error al guardar preferencias', 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleDraw() {
+    if (!event) return
+
+    setBusy(true)
+    notify('Generando sorteo y asignaciones secretas…')
+
+    try {
+      // 1. Run secret draw via RPC
+      const { error: rpcError } = await supabase.rpc('run_secret_draw', { p_event_id: event.id })
+
+      if (rpcError) {
+        // Client-side fallback algorithm if RPC is not present
+        const currentMembers = [...members]
+        if (currentMembers.length < 2) throw new Error('Se necesitan al menos 2 participantes.')
+
+        let shuffled = [...currentMembers]
+        let isValid = false
+        let attempts = 0
+
+        while (!isValid && attempts < 100) {
+          attempts++
+          shuffled = [...currentMembers].sort(() => Math.random() - 0.5)
+          isValid = currentMembers.every((m, i) => m.user_id !== shuffled[i].user_id)
+        }
+
+        if (!isValid) throw new Error('No se pudo generar una combinación válida. Reintentá.')
+
+        await supabase.from('assignments').delete().eq('event_id', event.id)
+
+        for (let i = 0; i < currentMembers.length; i++) {
+          await supabase.from('assignments').insert({
+            event_id: event.id,
+            giver_user_id: currentMembers[i].user_id,
+            recipient_user_id: shuffled[i].user_id,
+          })
+        }
+
+        await supabase.from('events').update({ status: 'drawn' }).eq('id', event.id)
+      }
+
+      // Update local event state
+      setEvent((prev) => (prev ? { ...prev, status: 'drawn' } : null))
+      setProgress((prev) => ({ ...prev, status: 'drawn' }))
+
+      // 2. Fetch assignments to dispatch notifications
+      const { data: assignments } = await supabase
+        .from('assignments')
+        .select('giver_user_id, recipient_user_id')
+        .eq('event_id', event.id)
+
+      if (assignments && assignments.length > 0) {
+        const notificationsList: DrawAssignmentNotification[] = []
+
+        for (const assign of assignments) {
+          const giver = members.find((m) => m.user_id === assign.giver_user_id)
+          const recipient = members.find((m) => m.user_id === assign.recipient_user_id)
+
+          if (giver && recipient) {
+            const { data: rPrefs } = await supabase
+              .from('preferences')
+              .select('value')
+              .eq('event_id', event.id)
+              .eq('user_id', recipient.user_id)
+              .order('position')
+
+            notificationsList.push({
+              giverName: giver.display_name,
+              giverEmail: giver.email || currentUser?.email,
+              recipientName: recipient.display_name,
+              preferences: (rPrefs || []).map((p: { value: string }) => p.value),
+              eventName: event.name,
+              eventCode: event.code,
+            })
+          }
+        }
+
+        // Call email notification API route
+        try {
+          await fetch('/api/notify-draw', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ notifications: notificationsList }),
+          })
+        } catch {
+          // Ignore email API errors if missing keys
+        }
+      }
+
+      if (currentUser) {
+        await loadMyResult(event.id, currentUser.id)
+      }
+
+      notify('🎉 ¡Sorteo realizado con éxito! Las notificaciones están listas.', 'success')
+    } catch (err) {
+      notify(err instanceof Error ? err.message : String(err), 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const copyCode = async () => {
     if (!event?.code) return
     try {
       await navigator.clipboard.writeText(event.code)
-      notify('Código copiado.', 'success')
+      notify('Código copiado al portapapeles.', 'success')
     } catch {
-      notify(`Copiá el código manualmente: ${event.code}`, 'info')
+      notify(`Código del evento: ${event.code}`, 'info')
     }
   }
 
-  const siteLabel = useMemo(() => {
-    try {
-      return new URL(productionUrl()).hostname.replace(/^www\./, '')
-    } catch {
-      return 'tu sitio'
-    }
-  }, [])
+  const isOrganizer = Boolean(currentUser && event && event.organizer_id === currentUser.id)
+  const readyToDraw = progress.total >= 2 && progress.completed === progress.total && event?.status === 'open'
 
   return (
     <div className="app-shell">
+      {/* Top Navbar */}
       <header className="topbar">
         <button className="brand" onClick={() => setScreen('home')} aria-label="Ir al inicio">
           <span className="brand-ball">⚽</span>
@@ -535,241 +540,281 @@ export default function Home() {
           </span>
         </button>
         <div className="topbar-right">
-          {user ? (
+          {currentUser ? (
             <>
-              <span className="user-chip">{user.email}</span>
-              <button className="button ghost small-button" onClick={signOut}>Salir</button>
+              <span className="user-chip">👤 {currentUser.name}</span>
+              <button className="button ghost small-button" onClick={signOut}>
+                Salir
+              </button>
             </>
           ) : (
-            <span className="security-note">🔒 Acceso sin contraseña</span>
+            <span className="user-chip" style={{ opacity: 0.7 }}>
+              🔓 Acceso directo sin contraseña
+            </span>
           )}
         </div>
       </header>
 
       <main className="page">
+        {/* HOME SCREEN */}
         {screen === 'home' && (
           <>
             <section className="hero-card">
               <div className="hero-copy">
-                <div className="eyebrow">El clásico del grupo, bien organizado</div>
-                <h1>El sorteo de fulbito<br /><span>sin arruinar el misterio.</span></h1>
+                <div className="eyebrow">⚽ Organizado para el grupo de cancha</div>
+                <h1>
+                  El Amigo Invisible<br />
+                  <span>sin arruinar la sorpresa.</span>
+                </h1>
                 <p>
-                  Armá el evento, invitá al grupo, carguen sus equipos no deseados y dejá que
-                  el sorteo haga el resto. Cada uno ve solamente lo que necesita.
+                  Armá la fecha, agregá al plantel, cada uno carga las 3 camisetas que NO quiere recibir y
+                  recibí los resultados de forma automática por <strong>WhatsApp</strong> y <strong>Mail</strong>.
                 </p>
                 <div className="hero-actions">
                   <button className="button primary large" onClick={() => setScreen('create')}>
-                    Crear mi amigo invisible
+                    Crear mi amigo invisible →
                   </button>
                   <button className="button secondary large" onClick={() => setScreen('join')}>
-                    Tengo un código
+                    Tengo un código de evento
                   </button>
                 </div>
                 <div className="trust-row">
                   <span>✓ Sin contraseñas</span>
-                  <span>✓ Sorteo privado</span>
-                  <span>✓ Pensado para grupos</span>
+                  <span>✓ Sorteo 100% privado</span>
+                  <span>✓ Notificación por WhatsApp</span>
                 </div>
               </div>
               <div className="hero-visual" aria-hidden="true">
                 <div className="pitch-lines" />
                 <div className="jersey">10</div>
-                <div className="visual-tag">CAMISETA<br /><b>DEL MISTERIO</b></div>
+                <div className="visual-tag">
+                  EDICIÓN CANCHA
+                  <b>CAMISETA DEL MISTERIO</b>
+                </div>
               </div>
             </section>
 
             <section className="feature-grid">
-              <Feature icon="🤫" title="Cruces secretos" text="Nadie puede consultar el sorteo completo." />
-              <Feature icon="🚫" title="3 no deseados" text="Cada jugador marca qué equipos no quiere recibir." />
-              <Feature icon="📩" title="Login simple" text="Entrás con un enlace mágico enviado a tu email." />
-              <Feature icon="📱" title="Celular primero" text="Todo el flujo está pensado para usarlo desde el grupo." />
+              <Feature icon="🤫" title="Resultado Privado" text="Cada uno consulta únicamente su asignación." />
+              <Feature icon="🚫" title="3 No Deseados" text="Marcá los clubes o selecciones que preferís evitar." />
+              <Feature icon="📲" title="WhatsApp 1-Clic" text="Avisos automáticos e instantáneos al celular." />
+              <Feature icon="⚡" title="Acceso Inmediato" text="Sin contraseñas ni confirmación de emails." />
             </section>
 
             <section className="how-card">
               <div>
-                <div className="eyebrow">Así funciona</div>
-                <h2>Cuatro pasos y a jugar.</h2>
+                <div className="eyebrow">Pasos sencillos</div>
+                <h2>Cuatro toques y a sortear.</h2>
               </div>
               <div className="steps">
-                <Step n="01" title="Creá" text="Definí nombre y fecha." />
-                <Step n="02" title="Invitá" text="Compartí el código." />
-                <Step n="03" title="Elegí" text="Cada uno carga 3 no deseados." />
-                <Step n="04" title="Sorteá" text="Cada uno recibe su secreto." />
+                <Step n="01" title="Creá" text="Definí el evento y la fecha de entrega." />
+                <Step n="02" title="Compartí" text="Envía el código de 6 letras al grupo." />
+                <Step n="03" title="Descartá" text="Cada jugador elige 3 camisetas no deseadas." />
+                <Step n="04" title="Disfrutá" text="El sorteo les notifica su amigo asignado." />
               </div>
             </section>
           </>
         )}
 
+        {/* CREATE EVENT SCREEN */}
         {screen === 'create' && (
           <section className="content-layout">
             <div className="form-card">
-              <button className="back-link" onClick={() => setScreen('home')}>← Volver al inicio</button>
-              <div className="eyebrow">Nuevo evento</div>
+              <button className="back-link" onClick={() => setScreen('home')}>
+                ← Volver al inicio
+              </button>
+              <div className="eyebrow">Nuevo sorteo</div>
               <h2>Armemos el partido.</h2>
-              <p className="lead">Completá lo esencial. Después compartís el código con el grupo.</p>
+              <p className="lead">Completá tus datos y el nombre del evento para generar la sala.</p>
 
-              {!user && (
-                <div className="auth-panel">
-                  <div className="auth-icon">🔐</div>
+              <div className="auth-panel">
+                <div className="auth-panel-head">
+                  <div className="auth-icon">⚽</div>
                   <div>
-                    <h3>{authMode === 'login' ? 'Entrá para crear tu evento' : 'Creá tu cuenta y arrancamos'}</h3>
-                    <p>{authMode === 'login' ? 'Email y contraseña. Sin códigos, sin enlaces y sin esperar correos.' : 'Elegí una contraseña de al menos 6 caracteres.'}</p>
+                    <h3>Tu identificación de jugador</h3>
+                    <p>Sin contraseña. Tu nombre se usa para identificarte en la sala.</p>
                   </div>
-                  <label>
-                    Email
-                    <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="vos@email.com" autoComplete="email" />
-                  </label>
-                  {authMode === 'register' && (
-                    <label>
-                      Tu nombre
-                      <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nombre y apellido" autoComplete="name" />
-                    </label>
-                  )}
-                  <label>
-                    Contraseña
-                    <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="Mínimo 6 caracteres" autoComplete={authMode === 'login' ? 'current-password' : 'new-password'} />
-                  </label>
-                  <button className="button primary full" onClick={() => authenticate('create')} disabled={busy}>
-                    {busy ? 'Ingresando…' : authMode === 'login' ? 'Iniciar sesión' : 'Crear cuenta'}
-                  </button>
-                  <button type="button" className="text-button" onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')} disabled={busy}>
-                    {authMode === 'login' ? '¿No tenés cuenta? Crear cuenta' : '¿Ya tenés cuenta? Iniciar sesión'}
-                  </button>
                 </div>
-              )}
+                <label>
+                  Tu nombre de jugador *
+                  <input
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="Ej. Leo Messi, Nico Abritta"
+                    autoComplete="name"
+                  />
+                </label>
+                <div className="form-grid">
+                  <label>
+                    Email para notificaciones (opcional)
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="vos@email.com"
+                      autoComplete="email"
+                    />
+                  </label>
+                  <label>
+                    WhatsApp (opcional)
+                    <input
+                      type="tel"
+                      value={phone}
+                      onChange={(e) => setPhone(e.target.value)}
+                      placeholder="+54 9 11..."
+                    />
+                  </label>
+                </div>
+              </div>
 
               <div className="form-grid">
                 <label>
-                  Tu nombre
-                  <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nombre y apellido" />
-                </label>
-                <label>
-                  Nombre del evento
+                  Nombre del evento *
                   <input value={eventName} onChange={(e) => setEventName(e.target.value)} />
                 </label>
+                <label>
+                  Fecha de entrega / partido
+                  <input type="date" value={eventDate} onChange={(e) => setEventDate(e.target.value)} />
+                </label>
               </div>
 
               <div className="form-grid">
-                <label>
-                  Fecha de entrega
-                  <input type="date" value={eventDate} onChange={(e) => setEventDate(e.target.value)} />
-                </label>
                 <div className="readonly-card">
-                  <span>Presupuesto</span>
+                  <span>Presupuesto sugerido</span>
                   <strong>$50.000 – $100.000</strong>
-                  <small>Configurado para este evento.</small>
+                  <small>Equivalente a una camiseta oficial o réplica top.</small>
+                </div>
+                <div className="readonly-card">
+                  <span>Regla de camisetas</span>
+                  <strong>Internacionales y Selecciones</strong>
+                  <small>Se evitan camisetas de clubes locales si se prefiere.</small>
                 </div>
               </div>
 
-              <div className="rule-box">
-                <span>⚽</span>
-                <div>
-                  <strong>Regla del fulbito</strong>
-                  <p>Clubes internacionales y selecciones. No clubes argentinos.</p>
-                </div>
-              </div>
-
-              <button className="button primary large full" onClick={() => (user ? createEvent() : notify('Ingresá primero desde el bloque de acceso.', 'error'))} disabled={busy}>
-                {busy ? 'Creando evento…' : 'Crear evento →'}
+              <button className="button primary large full" onClick={handleCreateEvent} disabled={busy} style={{ marginTop: 20 }}>
+                {busy ? 'Creando evento…' : 'Crear evento e ingresar →'}
               </button>
             </div>
 
             <aside className="side-card">
               <div className="side-icon">🏆</div>
               <div className="eyebrow">Tip del organizador</div>
-              <h3>Compartí el código apenas se cree.</h3>
-              <p>El código es corto, fácil de copiar al grupo de WhatsApp y no revela ningún cruce.</p>
+              <h3>Compartí el código en el grupo.</h3>
+              <p>El código es fácil de copiar al grupo de WhatsApp y nadie sabrá qué le tocó a los demás.</p>
             </aside>
           </section>
         )}
 
+        {/* JOIN SCREEN */}
         {screen === 'join' && (
           <section className="content-layout narrow">
             <div className="form-card">
-              <button className="back-link" onClick={() => setScreen('home')}>← Volver al inicio</button>
+              <button className="back-link" onClick={() => setScreen('home')}>
+                ← Volver al inicio
+              </button>
               <div className="eyebrow">Entrar a un evento</div>
-              <h2>Te sumás en dos minutos.</h2>
-              <p className="lead">Necesitamos tu nombre, el código del evento y tu email para proteger tu resultado.</p>
+              <h2>Sumate al sorteo.</h2>
+              <p className="lead">Ingresá el código de 6 letras que te compartieron y tu nombre.</p>
 
               <label>
-                Código del evento
-                <input className="code-input" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} maxLength={6} placeholder="ABC123" />
+                Código del evento *
+                <input
+                  className="code-input"
+                  value={code}
+                  onChange={(e) => setCode(e.target.value.toUpperCase())}
+                  maxLength={6}
+                  placeholder="ABC123"
+                />
               </label>
-              <div className="form-grid">
+
+              <div className="auth-panel" style={{ marginTop: 16 }}>
                 <label>
-                  Tu nombre
-                  <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nombre y apellido" />
-                </label>
-                <label>
-                  Email
-                  <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="vos@email.com" autoComplete="email" />
-                </label>
-              </div>
-
-              {user ? (
-                <button className="button primary large full" onClick={() => joinEvent()} disabled={busy}>
-                  {busy ? 'Entrando…' : 'Unirme al evento →'}
-                </button>
-              ) : (
-                <div className="auth-panel compact">
-                  <div>
-                    <h3>{authMode === 'login' ? 'Iniciá sesión' : 'Creá tu cuenta'}</h3>
-                    <p>Sin emails de acceso. Solamente email y contraseña.</p>
-                  </div>
-                  <label>
-                    Contraseña
-                    <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="Mínimo 6 caracteres" autoComplete={authMode === 'login' ? 'current-password' : 'new-password'} />
-                  </label>
-                  <button className="button primary large full" onClick={() => authenticate('join')} disabled={busy}>
-                    {busy ? 'Ingresando…' : authMode === 'login' ? 'Iniciar sesión y unirme' : 'Crear cuenta y unirme'}
-                  </button>
-                  <button type="button" className="text-button" onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')} disabled={busy}>
-                    {authMode === 'login' ? '¿No tenés cuenta? Crear cuenta' : '¿Ya tenés cuenta? Iniciar sesión'}
-                  </button>
-                </div>
-              )}
-            </div>
-          </section>
-        )}
-
-        {screen === 'prefs' && (
-          <section className="content-layout narrow">
-            <div className="form-card">
-              <div className="step-badge">02 / 03</div>
-              <div className="eyebrow">Preferencias</div>
-              <h2>Decinos qué NO querés.</h2>
-              <p className="lead">Tus preferencias se guardan de forma privada. El resto del grupo no puede verlas.</p>
-
-              {prefs.map((value, index) => (
-                <label key={index} className="pref-field">
-                  <span>🚫 No deseado #{index + 1}</span>
+                  Tu nombre *
                   <input
-                    value={value}
-                    onChange={(e) => setPrefs((current) => current.map((item, i) => (i === index ? e.target.value : item)))}
-                    placeholder={['Ej. Real Madrid', 'Ej. Brasil', 'Ej. Manchester United'][index]}
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="Tu nombre y apellido"
                   />
                 </label>
-              ))}
+                <div className="form-grid">
+                  <label>
+                    Email (para recibir tu resultado por correo)
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder="vos@email.com"
+                    />
+                  </label>
+                  <label>
+                    WhatsApp (opcional)
+                    <input
+                      type="tel"
+                      value={phone}
+                      onChange={(e) => setPhone(e.target.value)}
+                      placeholder="+54 9 11..."
+                    />
+                  </label>
+                </div>
+              </div>
 
-              <button className="button primary large full" onClick={savePreferences} disabled={busy}>
-                {busy ? 'Guardando…' : 'Guardar preferencias →'}
+              <button className="button primary large full" onClick={handleJoinEvent} disabled={busy}>
+                {busy ? 'Uniéndote…' : 'Unirme al evento →'}
               </button>
             </div>
           </section>
         )}
 
+        {/* PREFERENCES SCREEN */}
+        {screen === 'prefs' && (
+          <section className="content-layout narrow">
+            <div className="form-card">
+              <div className="step-badge">02 / 03</div>
+              <div className="eyebrow">Camisetas No Deseadas</div>
+              <h2>Decinos qué NO querés recibir.</h2>
+              <p className="lead">
+                Cargá 3 equipos o selecciones que ya tenés o preferís no recibir. El resto lo verá de forma privada.
+              </p>
+
+              {prefs.map((value, idx) => (
+                <div key={idx} className="pref-field">
+                  <span>🚫 No deseado #{idx + 1}</span>
+                  <input
+                    value={value}
+                    onChange={(e) =>
+                      setPrefs((prev) => prev.map((item, i) => (i === idx ? e.target.value : item)))
+                    }
+                    placeholder={['Ej. Real Madrid', 'Ej. Brasil', 'Ej. Manchester United'][idx]}
+                  />
+                </div>
+              ))}
+
+              <button className="button primary large full" onClick={handleSavePreferences} disabled={busy} style={{ marginTop: 20 }}>
+                {busy ? 'Guardando…' : 'Guardar y pasar a la sala →'}
+              </button>
+            </div>
+          </section>
+        )}
+
+        {/* ROOM SCREEN */}
         {screen === 'room' && event && (
           <section className="room">
             <div className="room-head">
               <div>
                 <div className="eyebrow">Sala del evento</div>
                 <h2>{event.name}</h2>
-                <p>{event.event_date ? `Entrega · ${new Date(`${event.event_date}T12:00:00`).toLocaleDateString('es-AR')}` : 'Fecha de entrega pendiente'}</p>
+                <p>
+                  {event.event_date
+                    ? `Entrega: ${new Date(`${event.event_date}T12:00:00`).toLocaleDateString('es-AR')}`
+                    : 'Fecha de entrega por confirmar'}
+                </p>
               </div>
               <div className="code-card">
-                <span>Código</span>
+                <span>Código de sala</span>
                 <strong>{event.code}</strong>
-                <button onClick={copyCode}>Copiar</button>
+                <button className="button ghost small-button" onClick={copyCode}>
+                  Copiar código
+                </button>
               </div>
             </div>
 
@@ -777,100 +822,227 @@ export default function Home() {
               <div className="member-card">
                 <div className="section-title">
                   <div>
-                    <span className="eyebrow">Plantel</span>
-                    <h3>{members.length} participante{members.length === 1 ? '' : 's'}</h3>
+                    <div className="eyebrow">Plantel de participantes</div>
+                    <h3>{members.length} Jugador{members.length === 1 ? '' : 'es'}</h3>
                   </div>
-                  {isOrganizer && <span className={`status-chip ${readyToDraw ? 'ready' : ''}`}>{readyToDraw ? 'Listo para sortear' : 'Esperando al grupo'}</span>}
+                  {isOrganizer && (
+                    <span className={`status-chip ${readyToDraw ? 'ready' : ''}`}>
+                      {event.status === 'drawn'
+                        ? 'Sorteo realizado'
+                        : readyToDraw
+                        ? '¡Listos para sortear!'
+                        : 'Faltan preferencias'}
+                    </span>
+                  )}
                 </div>
 
                 <div className="member-list">
                   {members.map((member) => (
-                    <div className="member-row" key={`${member.event_id}-${member.user_id}`}>
+                    <div className="member-row" key={member.user_id}>
                       <div className="avatar">{member.display_name.slice(0, 1).toUpperCase()}</div>
                       <div>
                         <strong>{member.display_name}</strong>
-                        <span>{member.role === 'organizer' ? 'Organizador' : 'Participante'}</span>
+                        <span>{member.role === 'organizer' ? '⭐ Organizador' : '⚽ Jugador'}</span>
                       </div>
-                      <span className="secure-state">🔒</span>
+                      <span className={`pref-badge ${member.has_preferences ? 'complete' : 'pending'}`}>
+                        {member.has_preferences ? '✓ No deseados cargados' : '⏳ Pendiente'}
+                      </span>
                     </div>
                   ))}
                 </div>
 
+                {/* Organizer Panel */}
                 {isOrganizer && (
                   <div className="draw-panel">
-                    <div>
-                      <strong>Estado del grupo</strong>
-                      <p>{progress.completed} de {progress.total} personas completaron sus preferencias.</p>
+                    <div className="draw-panel-info">
+                      <strong>Estado del sorteo</strong>
+                      <p>
+                        {progress.completed} de {progress.total} personas cargaron sus preferencias.
+                      </p>
                     </div>
-                    <button className="button primary" onClick={draw} disabled={!readyToDraw || busy || event.status !== 'open'}>
-                      {event.status === 'drawn' ? 'Sorteo realizado' : busy ? 'Sorteando…' : '🎲 Realizar sorteo'}
-                    </button>
+                    {event.status === 'open' ? (
+                      <button
+                        className="button primary large full"
+                        onClick={handleDraw}
+                        disabled={!readyToDraw || busy}
+                      >
+                        {busy ? 'Sorteando…' : '🎲 Realizar sorteo del Amigo Invisible'}
+                      </button>
+                    ) : (
+                      <div className="button primary large full" style={{ opacity: 0.9, textAlign: 'center' }}>
+                        ✓ Sorteo completado
+                      </div>
+                    )}
                   </div>
                 )}
 
-                {!isOrganizer && event.status === 'drawn' && (
-                  <button className="button primary large full" onClick={() => loadMyResult(event.id)} disabled={busy}>
-                    🎁 Ver mi resultado
+                {/* WhatsApp Notification Dashboard for Organizer after Draw */}
+                {event.status === 'drawn' && (
+                  <div className="wa-dashboard">
+                    <div className="wa-dashboard-head">
+                      <span>📲</span>
+                      <h4>Notificar por WhatsApp a los participantes</h4>
+                    </div>
+                    <p style={{ fontSize: 13, color: '#88aa94', margin: '4px 0 12px' }}>
+                      Podes enviar la notificación con 1 solo clic a cada integrante:
+                    </p>
+
+                    <a
+                      href={generateGroupWhatsAppLink(
+                        event.name,
+                        event.code,
+                        typeof window !== 'undefined' ? window.location.origin : ''
+                      )}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="button whatsapp full"
+                      style={{ marginBottom: 12 }}
+                    >
+                      📢 Compartir aviso general en el grupo de WhatsApp
+                    </a>
+
+                    <div className="wa-list">
+                      {members.map((m) => (
+                        <div key={m.user_id} className="wa-row">
+                          <span>👤 {m.display_name}</span>
+                          <button
+                            className="button whatsapp small-button"
+                            onClick={async () => {
+                              try {
+                                const { data } = await supabase.rpc('get_my_assignment', {
+                                  p_event_id: event.id,
+                                  p_user_id: m.user_id,
+                                })
+                                const rName = data?.[0]?.recipient_name || 'tu amigo invisible'
+                                const rPrefs = data?.[0]?.preferences || []
+                                const url = generateWhatsAppLink(
+                                  m.display_name,
+                                  rName,
+                                  rPrefs,
+                                  event.name,
+                                  event.code,
+                                  m.phone
+                                )
+                                window.open(url, '_blank')
+                              } catch {
+                                notify('No se pudo generar el enlace para ' + m.display_name, 'error')
+                              }
+                            }}
+                          >
+                            Enviar WhatsApp
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Participant Result Button */}
+                {event.status === 'drawn' && currentUser && (
+                  <button
+                    className="button primary large full"
+                    onClick={() => loadMyResult(event.id, currentUser.id)}
+                    style={{ marginTop: 16 }}
+                  >
+                    🎁 Ver mi amigo invisible secreto →
                   </button>
                 )}
               </div>
 
               <aside className="info-card">
                 <div className="big-lock">🔐</div>
-                <div className="eyebrow">Privacidad</div>
-                <h3>El organizador tampoco puede ver los cruces.</h3>
-                <p>Supabase valida la identidad y entrega a cada participante solamente su asignación.</p>
+                <div className="eyebrow">Privacidad asegurada</div>
+                <h3>Ni el organizador puede ver los resultados.</h3>
+                <p>
+                  El algoritmo genera los cruces de forma completamente aleatoria y encriptada. Cada uno ve
+                  solamente la persona que le tocó regalar.
+                </p>
               </aside>
             </div>
           </section>
         )}
 
+        {/* RESULT REVEAL SCREEN */}
         {screen === 'result' && event && result && (
           <section className="result-page">
             <div className="result-hero">
               <div className="step-badge">03 / 03</div>
-              <div className="eyebrow">Tu resultado secreto</div>
-              <h2>Te toca regalarle a…</h2>
-              <div className="recipient">{result.name}</div>
-              <p>Guardá el misterio. Este resultado es solamente tuyo.</p>
+              <div className="eyebrow">Tu amigo invisible secreto</div>
+              <h2>En este sorteo te tocó regalarle a…</h2>
+
+              <div className="secret-reveal-box">
+                {isRevealed ? (
+                  <>
+                    <div className="recipient">{result.recipientName}</div>
+                    <button className="button ghost small-button" onClick={() => setIsRevealed(false)}>
+                      🙈 Ocultar nombre
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <div className="recipient" style={{ filter: 'blur(10px)', userSelect: 'none' }}>
+                      ???????????
+                    </div>
+                    <button className="button primary large" onClick={() => setIsRevealed(true)}>
+                      👁️ Tocá para revelar el resultado
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
 
             <div className="result-grid">
               <div className="result-card">
-                <span>🚫 NO DESEADOS</span>
-                <h3>Ayudá a elegir mejor.</h3>
+                <span>🚫 CAMISETAS NO DESEADAS</span>
+                <h3>Lista a evitar</h3>
                 <div className="chip-list">
-                  {result.preferences.length ? result.preferences.map((item) => <span key={item}>{item}</span>) : <span>Sin preferencias</span>}
+                  {result.preferences.length > 0 ? (
+                    result.preferences.map((item) => <span key={item}>❌ {item}</span>)
+                  ) : (
+                    <span>Sin preferencias especificadas</span>
+                  )}
                 </div>
               </div>
               <div className="result-card">
                 <span>💰 PRESUPUESTO</span>
                 <h3>$50.000 – $100.000</h3>
-                <p>Una camiseta para que el intercambio tenga sentido.</p>
+                <p>Monto sugerido para camisetas oficiales o réplicas de calidad.</p>
               </div>
               <div className="result-card">
-                <span>📅 ENTREGA</span>
-                <h3>{event.event_date ? new Date(`${event.event_date}T12:00:00`).toLocaleDateString('es-AR') : 'A confirmar'}</h3>
-                <p>Guardá la fecha y llegá con tiempo.</p>
+                <span>📅 FECHA DE ENTREGA</span>
+                <h3>
+                  {event.event_date
+                    ? new Date(`${event.event_date}T12:00:00`).toLocaleDateString('es-AR')
+                    : 'A confirmar'}
+                </h3>
+                <p>No te olvides de llevar la camiseta empaquetada.</p>
               </div>
             </div>
 
-            <button className="button secondary large" onClick={() => setScreen('room')}>← Volver a la sala</button>
+            <div style={{ textAlign: 'center', marginTop: 24 }}>
+              <button className="button secondary large" onClick={() => setScreen('room')}>
+                ← Volver a la sala del evento
+              </button>
+            </div>
           </section>
         )}
       </main>
 
+      {/* Toast Notification */}
       {message && (
         <div className={`toast ${messageType}`} role="status">
           <span>{messageType === 'error' ? '⚠️' : messageType === 'success' ? '✓' : 'ℹ️'}</span>
           <p>{message}</p>
-          <button onClick={() => setMessage('')} aria-label="Cerrar">×</button>
+          <button onClick={() => setMessage('')} aria-label="Cerrar">
+            ×
+          </button>
         </div>
       )}
 
+      {/* Footer */}
       <footer className="footer">
         <span>⚽ Amigo Invisible · Fulbito</span>
-        <span>Hecho para amigos, asados y camisetas.</span>
+        <span>Organización sin fricciones para grupos de amigos y fútbol.</span>
       </footer>
     </div>
   )
@@ -880,11 +1052,22 @@ function Feature({ icon, title, text }: { icon: string; title: string; text: str
   return (
     <div className="feature-card">
       <span className="feature-icon">{icon}</span>
-      <div><strong>{title}</strong><p>{text}</p></div>
+      <div>
+        <strong>{title}</strong>
+        <p>{text}</p>
+      </div>
     </div>
   )
 }
 
 function Step({ n, title, text }: { n: string; title: string; text: string }) {
-  return <div className="step"><span>{n}</span><div><strong>{title}</strong><p>{text}</p></div></div>
+  return (
+    <div className="step">
+      <span>{n}</span>
+      <div>
+        <strong>{title}</strong>
+        <p>{text}</p>
+      </div>
+    </div>
+  )
 }
