@@ -127,6 +127,19 @@ function loadFromLocalDisk(): StoreData {
   return getInitialData()
 }
 
+// Parsea de forma segura el JSON de la nube eliminando cualquier HTML inyectado por el proveedor
+function parseJsonFromCloud(text: string): any {
+  if (!text) return null
+  try {
+    const cut = text.search(/<!doctype|<html/i)
+    const jsonStr = cut !== -1 ? text.substring(0, cut).trim() : text.trim()
+    return JSON.parse(jsonStr)
+  } catch (err) {
+    console.warn('[Store:Cloud] Error parseando JSON de la nube:', err)
+    return null
+  }
+}
+
 // Carga centralizada: Consulta el store en la nube para sincronizar todos los dispositivos y lambdas
 async function loadData(forceRefresh = false): Promise<StoreData> {
   const now = Date.now()
@@ -137,7 +150,7 @@ async function loadData(forceRefresh = false): Promise<StoreData> {
   // 1. Intentar descargar del bin principal en la nube
   try {
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 3500)
+    const timer = setTimeout(() => controller.abort(), 4000)
     const res = await fetch(`${PRIMARY_BIN}?_ts=${now}`, {
       headers: { 'Cache-Control': 'no-cache, no-store' },
       signal: controller.signal,
@@ -145,7 +158,8 @@ async function loadData(forceRefresh = false): Promise<StoreData> {
     clearTimeout(timer)
 
     if (res.ok) {
-      const parsed = await res.json()
+      const rawText = await res.text()
+      const parsed = parseJsonFromCloud(rawText)
       if (parsed && typeof parsed === 'object') {
         const cloudData: StoreData = {
           users: parsed.users || {},
@@ -168,7 +182,7 @@ async function loadData(forceRefresh = false): Promise<StoreData> {
   // 2. Intentar descargar del bin de respaldo
   try {
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 3000)
+    const timer = setTimeout(() => controller.abort(), 3500)
     const res = await fetch(`${BACKUP_BIN}?_ts=${now}`, {
       headers: { 'Cache-Control': 'no-cache, no-store' },
       signal: controller.signal,
@@ -176,7 +190,8 @@ async function loadData(forceRefresh = false): Promise<StoreData> {
     clearTimeout(timer)
 
     if (res.ok) {
-      const parsed = await res.json()
+      const rawText = await res.text()
+      const parsed = parseJsonFromCloud(rawText)
       if (parsed && typeof parsed === 'object') {
         const cloudData: StoreData = {
           users: parsed.users || {},
@@ -211,7 +226,7 @@ async function saveData(data: StoreData): Promise<void> {
 
   const payload = JSON.stringify(data)
 
-  // Subir a la nube principal
+  // Guardar en el bin principal
   try {
     const res = await fetch(PRIMARY_BIN, {
       method: 'PUT',
@@ -219,23 +234,24 @@ async function saveData(data: StoreData): Promise<void> {
       body: payload,
     })
     if (!res.ok) {
-      console.warn('[Store:Cloud] PUT al bin principal falló:', res.status)
-      // Backup bin
-      await fetch(BACKUP_BIN, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: payload,
-      })
+      console.warn('[Store:Cloud] PUT al bin principal devolvió status:', res.status)
     }
   } catch (err) {
-    console.error('[Store:Cloud] Error sincronizando a la nube:', err)
-    try {
-      await fetch(BACKUP_BIN, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: payload,
-      })
-    } catch {}
+    console.error('[Store:Cloud] Error en PUT bin principal:', err)
+  }
+
+  // Guardar en el bin de respaldo para mantener la copia sincronizada
+  try {
+    const res = await fetch(BACKUP_BIN, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload,
+    })
+    if (!res.ok) {
+      console.warn('[Store:Cloud] PUT al bin backup devolvió status:', res.status)
+    }
+  } catch (err) {
+    console.error('[Store:Cloud] Error en PUT bin backup:', err)
   }
 }
 

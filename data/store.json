@@ -90,9 +90,25 @@
       "status": "drawn",
       "organizer_id": "usr_testuser_1789076249328",
       "created_at": "2026-09-10T21:37:30.986Z"
+    },
+    "aa2a616a-a008-4d52-aabb-b6113bdc19d8": {
+      "id": "aa2a616a-a008-4d52-aabb-b6113bdc19d8",
+      "code": "326087",
+      "name": "Amigo Invisible · Fulbito de los Jueves",
+      "gift_type": "Camisetas de fútbol",
+      "theme": "fulbito",
+      "budget_min": 50000,
+      "budget_max": 100000,
+      "event_date": "2026-11-19",
+      "rules": "Clubes internacionales y selecciones nacionales. No clubes argentinos.",
+      "preference_count": 3,
+      "status": "open",
+      "organizer_id": "usr_nicolasabritta2101@gmail.com",
+      "created_at": "2026-11-12T11:16:08.663Z"
     }
   },
   "eventsByCode": {
+    "326087": "aa2a616a-a008-4d52-aabb-b6113bdc19d8",
     "SZ4049": "ev_1789076213285",
     "SZ5151": "ev_1789076250986"
   },
@@ -127,6 +143,16 @@
         "display_name": "Tester 2",
         "role": "participant",
         "shirt_size": "M"
+      }
+    ],
+    "aa2a616a-a008-4d52-aabb-b6113bdc19d8": [
+      {
+        "event_id": "aa2a616a-a008-4d52-aabb-b6113bdc19d8",
+        "user_id": "usr_nicolasabritta2101@gmail.com",
+        "display_name": "Nicolas abritta",
+        "role": "organizer",
+        "joined_at": "2026-11-12T11:16:09.025Z",
+        "shirt_size": "L"
       }
     ]
   },
@@ -205,6 +231,26 @@
         "user_id": "usr_testuser_1789076249328_2",
         "position": 3,
         "value": "Velez"
+      }
+    ],
+    "aa2a616a-a008-4d52-aabb-b6113bdc19d8": [
+      {
+        "event_id": "aa2a616a-a008-4d52-aabb-b6113bdc19d8",
+        "user_id": "usr_nicolasabritta2101@gmail.com",
+        "position": 1,
+        "value": "Camisetas rojas"
+      },
+      {
+        "event_id": "aa2a616a-a008-4d52-aabb-b6113bdc19d8",
+        "user_id": "usr_nicolasabritta2101@gmail.com",
+        "position": 2,
+        "value": "Brasil"
+      },
+      {
+        "event_id": "aa2a616a-a008-4d52-aabb-b6113bdc19d8",
+        "user_id": "usr_nicolasabritta2101@gmail.com",
+        "position": 3,
+        "value": "Inglaterra"
       }
     ]
   },
