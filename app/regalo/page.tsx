@@ -150,11 +150,14 @@ function RegaloContent({
   }
 
   if (error || !result) {
+    const noGiftRequired = error.includes('no tenés que hacer otro regalo')
     return (
       <div className="page" style={{ textAlign: 'center', padding: '60px 20px' }}>
-        <div style={{ fontSize: 44, marginBottom: 12 }}>🔒</div>
-        <h2>No pudimos cargar tu resultado</h2>
-        <p style={{ color: '#f5c6c2', maxWidth: 480, margin: '0 auto 24px', lineHeight: 1.5 }}>{error}</p>
+        <div style={{ fontSize: 44, marginBottom: 12 }}>{noGiftRequired ? '✅' : '🔒'}</div>
+        <h2>{noGiftRequired ? 'No tenés que hacer otro regalo' : 'No pudimos cargar tu resultado'}</h2>
+        <p style={{ color: noGiftRequired ? '#98cbb0' : '#f5c6c2', maxWidth: 480, margin: '0 auto 24px', lineHeight: 1.5 }}>
+          {error}
+        </p>
         <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }}>
           {event?.code ? (
             <Link href={`/evento/${event.code}`} className="button primary large">

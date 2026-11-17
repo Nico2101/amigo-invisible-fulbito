@@ -7,10 +7,19 @@ export async function POST(req: NextRequest) {
     const body = await req.json()
     console.log('[API /api/events/draw POST] Body:', JSON.stringify(body))
 
-    const { event_id } = body
+    const { event_id, user_id, confirm_redraw } = body
 
-    if (!event_id) {
-      return NextResponse.json({ error: 'Falta event_id' }, { status: 400 })
+    if (!event_id || !user_id) {
+      return NextResponse.json({ error: 'Faltan event_id o user_id' }, { status: 400 })
+    }
+
+    const event = await store.getEventById(event_id)
+    if (!event) return NextResponse.json({ error: 'Evento no encontrado' }, { status: 404 })
+    if (event.organizer_id !== user_id) {
+      return NextResponse.json({ error: 'Solo el organizador puede realizar el sorteo' }, { status: 403 })
+    }
+    if (event.status === 'drawn' && !confirm_redraw) {
+      return NextResponse.json({ error: 'El sorteo ya fue realizado. Confirmá que querés reemplazarlo.' }, { status: 400 })
     }
 
     const assignments = await store.runDraw(event_id)

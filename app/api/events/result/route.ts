@@ -15,7 +15,11 @@ export async function POST(req: NextRequest) {
 
     const result = await store.getMyAssignment(event_id, user_id)
     if (!result) {
-      return NextResponse.json({ error: 'No hay una asignación para este usuario.' }, { status: 404 })
+      const member = (await store.getMembers(event_id)).find(m => m.user_id === user_id)
+      const error = member?.skip_giving
+        ? 'En este nuevo sorteo no tenés que hacer otro regalo.'
+        : 'No hay una asignación para este usuario.'
+      return NextResponse.json({ error }, { status: 404 })
     }
 
     const ev = await store.getEventById(event_id)
@@ -49,7 +53,11 @@ export async function GET(req: NextRequest) {
 
     const result = await store.getMyAssignment(event_id, user_id)
     if (!result) {
-      return NextResponse.json({ error: 'No hay una asignación para este usuario.' }, { status: 404 })
+      const member = (await store.getMembers(event_id)).find(m => m.user_id === user_id)
+      const error = member?.skip_giving
+        ? 'En este nuevo sorteo no tenés que hacer otro regalo.'
+        : 'No hay una asignación para este usuario.'
+      return NextResponse.json({ error }, { status: 404 })
     }
 
     const ev = await store.getEventById(event_id)

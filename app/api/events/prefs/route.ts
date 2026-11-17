@@ -12,7 +12,11 @@ export async function GET(req: NextRequest) {
     }
 
     const result = await store.getPreferencesAndSize(event_id, user_id)
-    return NextResponse.json(result)
+    const member = (await store.getMembers(event_id)).find(m => m.user_id === user_id)
+    return NextResponse.json({
+      ...result,
+      needs_preferences: !member?.skip_receiving,
+    })
   } catch (err) {
     console.error('[API /api/events/prefs GET] ❌ Error:', err)
     return NextResponse.json({ error: String(err) }, { status: 500 })

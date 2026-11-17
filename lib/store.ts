@@ -24,6 +24,8 @@ export interface StoreMember {
   display_name: string
   role: 'organizer' | 'participant'
   shirt_size?: string
+  skip_giving?: boolean
+  skip_receiving?: boolean
   joined_at: string
 }
 
@@ -386,6 +388,23 @@ export async function getMembers(eventId: string): Promise<StoreMember[]> {
   return data.membersByEvent[eventId] || []
 }
 
+export async function updateMemberDrawExclusions(
+  eventId: string,
+  memberId: string,
+  exclusions: Pick<StoreMember, 'skip_giving' | 'skip_receiving'>
+): Promise<StoreMember> {
+  const data = await loadData(true)
+  const members = data.membersByEvent[eventId] || []
+  const member = members.find(m => m.user_id === memberId)
+
+  if (!member) throw new Error('El participante no pertenece a este evento.')
+
+  member.skip_giving = Boolean(exclusions.skip_giving)
+  member.skip_receiving = Boolean(exclusions.skip_receiving)
+  await saveData(data)
+  return member
+}
+
 export async function savePreferences(eventId: string, userId: string, values: string[], shirtSize?: string): Promise<void> {
   const data = await loadData(true)
   let list = data.prefsByEvent[eventId] || []
@@ -484,16 +503,17 @@ export async function getProgress(eventId: string): Promise<{ total: number; com
   const data = await loadData(true)
   const ev = data.events[eventId]
   const members = data.membersByEvent[eventId] || []
+  const recipients = members.filter(m => !m.skip_receiving)
   const required = ev?.preference_count || 3
 
   let completed = 0
-  for (const m of members) {
+  for (const m of recipients) {
     const prefs = (data.prefsByEvent[eventId] || []).filter(p => p.user_id === m.user_id)
     if (prefs.length >= required) completed++
   }
 
   return {
-    total: members.length,
+    total: recipients.length,
     completed,
     status: ev?.status || 'open',
   }
@@ -502,24 +522,47 @@ export async function getProgress(eventId: string): Promise<{ total: number; com
 export async function runDraw(eventId: string): Promise<StoreAssignment[]> {
   const data = await loadData(true)
   const members = data.membersByEvent[eventId] || []
-  if (members.length < 2) throw new Error('Se necesitan al menos 2 participantes.')
+  const givers = members.filter(m => !m.skip_giving)
+  const recipients = members.filter(m => !m.skip_receiving)
 
-  let shuffled = [...members]
-  let valid = false
-  let attempts = 0
-
-  while (!valid && attempts < 200) {
-    attempts++
-    shuffled = [...members].sort(() => Math.random() - 0.5)
-    valid = members.every((m, i) => m.user_id !== shuffled[i].user_id)
+  if (givers.length !== recipients.length) {
+    throw new Error(`Para sortear, la cantidad de personas que dan (${givers.length}) debe coincidir con la cantidad de personas que reciben (${recipients.length}).`)
+  }
+  if (givers.length === 0) {
+    throw new Error('Debe quedar al menos una persona que de y otra que reciba un regalo.')
   }
 
-  if (!valid) throw new Error('No se pudo generar un sorteo válido. Intentá nuevamente.')
+  // Emparejamiento bipartito aleatorio: encuentra una combinacion valida incluso
+  // cuando el grupo que da no es exactamente el mismo que el que recibe.
+  const randomized = <T,>(items: T[]): T[] => [...items].sort(() => Math.random() - 0.5)
+  const recipientByGiver = new Map<string, string>()
+  const giverByRecipient = new Map<string, string>()
 
-  const assignments: StoreAssignment[] = members.map((m, i) => ({
+  const tryAssign = (giverId: string, seenRecipients: Set<string>): boolean => {
+    for (const recipient of randomized(recipients)) {
+      if (recipient.user_id === giverId || seenRecipients.has(recipient.user_id)) continue
+      seenRecipients.add(recipient.user_id)
+
+      const currentGiver = giverByRecipient.get(recipient.user_id)
+      if (!currentGiver || tryAssign(currentGiver, seenRecipients)) {
+        giverByRecipient.set(recipient.user_id, giverId)
+        recipientByGiver.set(giverId, recipient.user_id)
+        return true
+      }
+    }
+    return false
+  }
+
+  for (const giver of randomized(givers)) {
+    if (!tryAssign(giver.user_id, new Set())) {
+      throw new Error('Con estas exclusiones no se puede armar un sorteo sin que alguien se regale a si mismo. Revisa las marcas e intenta de nuevo.')
+    }
+  }
+
+  const assignments: StoreAssignment[] = givers.map(giver => ({
     event_id: eventId,
-    giver_user_id: m.user_id,
-    recipient_user_id: shuffled[i].user_id,
+    giver_user_id: giver.user_id,
+    recipient_user_id: recipientByGiver.get(giver.user_id)!,
   }))
 
   data.assignmentsByEvent[eventId] = assignments

@@ -529,6 +529,51 @@ input:focus{
 .draw-panel-info strong{font-size:14px;display:block}
 .draw-panel-info p{margin:4px 0 0;color:#85a291;font-size:12px}
 
+.draw-setup-modal{max-width:680px}
+.draw-balance{
+  display:flex;
+  flex-direction:column;
+  gap:3px;
+  padding:13px 15px;
+  border:1px solid #1e542f;
+  border-radius:14px;
+  background:#0d2417;
+  margin-bottom:14px;
+}
+.draw-balance strong{font-size:14px}
+.draw-balance span{font-size:12px;color:#8aa494}
+.draw-balance.unbalanced{border-color:#7c4a1d;background:#291b0c}
+.draw-balance.unbalanced strong{color:#f6c453}
+.draw-exception-list{display:flex;flex-direction:column;gap:9px;max-height:45dvh;overflow-y:auto;padding-right:2px}
+.draw-exception-row{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:14px;
+  padding:13px;
+  border:1px solid #1b3d26;
+  border-radius:14px;
+  background:#09190e;
+}
+.draw-exception-row strong,.draw-exception-row span{display:block}
+.draw-exception-row strong{font-size:14px}
+.draw-exception-row span{font-size:11px;color:#7e9b88;margin-top:3px}
+.draw-exception-actions{display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end}
+.draw-toggle{
+  border:1px solid #355143;
+  background:#0d2114;
+  color:#c2d7c8;
+  border-radius:9px;
+  padding:7px 9px;
+  font:inherit;
+  font-size:11px;
+  font-weight:800;
+  cursor:pointer;
+}
+.draw-toggle.active{background:#39200c;border-color:#a16207;color:#f9d46d}
+.draw-toggle:disabled{opacity:.6;cursor:wait}
+.draw-setup-note{margin-top:14px;padding:13px 15px;border-left:3px solid var(--green);background:#0b2112;color:#9ebcab;font-size:12px;line-height:1.5;border-radius:0 12px 12px 0}
+
 /* WhatsApp Dashboard */
 .wa-dashboard{
   margin-top:20px;
@@ -998,6 +1043,8 @@ button, .button {
   .member-row strong {
     font-size: 13px;
   }
+  .draw-exception-row{align-items:flex-start;flex-direction:column}
+  .draw-exception-actions{justify-content:flex-start}
   .pref-badge {
     font-size: 10px;
     padding: 3px 6px;

@@ -38,6 +38,12 @@ interface MemberRow {
   shirt_size?: string
 }
 
+interface DrawSetting {
+  user_id: string
+  skip_giving: boolean
+  skip_receiving: boolean
+}
+
 async function api<T>(url: string, options?: RequestInit): Promise<T> {
   const res = await fetch(url, {
     headers: { 'Content-Type': 'application/json' },
@@ -71,6 +77,10 @@ export default function EventPage() {
 
   // Organizer settings modal
   const [showConfigModal, setShowConfigModal] = useState(false)
+  const [showDrawSetupModal, setShowDrawSetupModal] = useState(false)
+  const [drawSettings, setDrawSettings] = useState<Record<string, DrawSetting>>({})
+  const [loadingDrawSettings, setLoadingDrawSettings] = useState(false)
+  const [savingDrawSetting, setSavingDrawSetting] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
   const [editBudgetMin, setEditBudgetMin] = useState(50000)
   const [editBudgetMax, setEditBudgetMax] = useState(100000)
@@ -122,7 +132,7 @@ export default function EventPage() {
       if (isMember) {
         // Consultar preferencias del usuario
         try {
-          const res = await api<{ preferences?: string[]; shirt_size?: string } | string[]>(
+          const res = await api<{ preferences?: string[]; shirt_size?: string; needs_preferences?: boolean } | string[]>(
             `/api/events/prefs?event_id=${ev.id}&user_id=${user.id}`
           )
           const myPrefs = Array.isArray(res) ? res : res?.preferences || []
@@ -143,8 +153,9 @@ export default function EventPage() {
 
           const validPrefsCount = loadedPrefs.filter(Boolean).length
           const requiredCount = ev.preference_count || 3
+          const needsPreferences = Array.isArray(res) || res.needs_preferences !== false
 
-          if (validPrefsCount >= requiredCount) {
+          if (ev.status === 'drawn' || !needsPreferences || validPrefsCount >= requiredCount) {
             // Ya cargó todas sus camisetas no deseadas -> VA DIRECTO A LA SALA
             setScreen('room')
           } else {
@@ -383,16 +394,65 @@ export default function EventPage() {
     }
   }
 
+  async function openDrawSetup() {
+    if (!event || !currentUser) return
+    setLoadingDrawSettings(true)
+    try {
+      const data = await api<{ settings: DrawSetting[] }>(
+        `/api/events/draw-settings?event_id=${event.id}&user_id=${currentUser.id}`
+      )
+      setDrawSettings(Object.fromEntries(data.settings.map(setting => [setting.user_id, setting])))
+      setShowDrawSetupModal(true)
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'No se pudo cargar la configuración del sorteo.', 'error')
+    } finally {
+      setLoadingDrawSettings(false)
+    }
+  }
+
+  async function toggleDrawSetting(member: MemberRow, field: 'skip_giving' | 'skip_receiving') {
+    if (!event || !currentUser) return
+    const current = drawSettings[member.user_id] || {
+      user_id: member.user_id,
+      skip_giving: false,
+      skip_receiving: false,
+    }
+    const next = { ...current, [field]: !current[field] }
+    setSavingDrawSetting(member.user_id)
+    try {
+      const saved = await api<DrawSetting>('/api/events/draw-settings', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          event_id: event.id,
+          user_id: currentUser.id,
+          member_id: member.user_id,
+          skip_giving: next.skip_giving,
+          skip_receiving: next.skip_receiving,
+        }),
+      })
+      setDrawSettings(previous => ({ ...previous, [member.user_id]: saved }))
+      await refreshMembers(event.id)
+    } catch (err) {
+      notify(err instanceof Error ? err.message : 'No se pudo guardar la marca.', 'error')
+    } finally {
+      setSavingDrawSetting(null)
+    }
+  }
+
   // Realizar el sorteo (organizador)
   async function handleDraw() {
-    if (!event) return
+    if (!event || !currentUser) return
+    const isRedraw = event.status === 'drawn'
+    if (isRedraw && !window.confirm('Esto reemplazará las asignaciones actuales. Usalo solo si ya avisaste al grupo o perdiste el sorteo anterior. ¿Querés continuar?')) {
+      return
+    }
     setBusy(true)
     notify('Generando sorteo secreto entre los participantes…')
 
     try {
       await api('/api/events/draw', {
         method: 'POST',
-        body: JSON.stringify({ event_id: event.id }),
+        body: JSON.stringify({ event_id: event.id, user_id: currentUser.id, confirm_redraw: isRedraw }),
       })
 
       setEvent(prev => (prev ? { ...prev, status: 'drawn' } : null))
@@ -419,6 +479,9 @@ export default function EventPage() {
 
   const isOrganizer = Boolean(currentUser && event && event.organizer_id === currentUser.id)
   const readyToDraw = progress.total >= 2 && progress.completed === progress.total && event?.status === 'open'
+  const activeGivers = members.filter(member => !drawSettings[member.user_id]?.skip_giving).length
+  const activeRecipients = members.filter(member => !drawSettings[member.user_id]?.skip_receiving).length
+  const drawGroupsBalanced = activeGivers === activeRecipients && activeGivers > 0
   const siteUrl = typeof window !== 'undefined' ? window.location.origin : ''
 
   if (loading) {
@@ -813,11 +876,19 @@ export default function EventPage() {
                       </p>
                     </div>
 
+                    <button
+                      className="button secondary full"
+                      onClick={openDrawSetup}
+                      disabled={loadingDrawSettings || busy}
+                    >
+                      {loadingDrawSettings ? 'Cargando preparación…' : '⚙️ Preparar sorteo y excepciones'}
+                    </button>
+
                     {event.status === 'open' ? (
                       <button
                         className="button primary large full"
                         onClick={handleDraw}
-                        disabled={!readyToDraw || busy}
+                        disabled={!readyToDraw || !drawGroupsBalanced || busy}
                         style={{ marginTop: 12 }}
                       >
                         {busy ? 'Sorteando…' : '🎲 Realizar sorteo del Amigo Invisible'}
@@ -829,6 +900,9 @@ export default function EventPage() {
                         </div>
                         <button className="button secondary full" onClick={() => router.push(`/regalo?code=${code}`)}>
                           🎁 Ver a quién te tocó regalar
+                        </button>
+                        <button className="button ghost full" onClick={handleDraw} disabled={busy}>
+                          {busy ? 'Rehaciendo sorteo…' : '🔄 Rehacer sorteo con esta preparación'}
                         </button>
                       </div>
                     )}
@@ -1065,6 +1139,78 @@ export default function EventPage() {
                 Cerrar
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showDrawSetupModal && (
+        <div className="modal-overlay" onClick={() => setShowDrawSetupModal(false)}>
+          <div className="modal-panel draw-setup-modal" onClick={e => e.stopPropagation()}>
+            <div className="eyebrow">Preparación del sorteo</div>
+            <h2>Excepciones por jugador</h2>
+            <p className="lead" style={{ marginBottom: 16 }}>
+              Marcá solo los intercambios que ya se resolvieron por fuera. Una persona que no da puede seguir recibiendo, y una que no recibe puede seguir dando.
+            </p>
+
+            <div className={`draw-balance ${drawGroupsBalanced ? 'balanced' : 'unbalanced'}`}>
+              <strong>{activeGivers} dan regalo · {activeRecipients} reciben regalo</strong>
+              <span>
+                {drawGroupsBalanced
+                  ? 'La cantidad coincide: el sorteo puede armarse.'
+                  : 'Deben coincidir para que cada regalo tenga destinatario.'}
+              </span>
+            </div>
+
+            <div className="draw-exception-list">
+              {members.map(member => {
+                const setting = drawSettings[member.user_id] || {
+                  user_id: member.user_id,
+                  skip_giving: false,
+                  skip_receiving: false,
+                }
+                const isSaving = savingDrawSetting === member.user_id
+                return (
+                  <div className="draw-exception-row" key={member.user_id}>
+                    <div>
+                      <strong>{member.display_name}</strong>
+                      <span>
+                        {setting.skip_giving || setting.skip_receiving
+                          ? 'Tiene una excepción en este sorteo'
+                          : 'Participa normalmente'}
+                      </span>
+                    </div>
+                    <div className="draw-exception-actions">
+                      <button
+                        type="button"
+                        className={`draw-toggle ${setting.skip_giving ? 'active' : ''}`}
+                        onClick={() => toggleDrawSetting(member, 'skip_giving')}
+                        disabled={isSaving}
+                        aria-pressed={setting.skip_giving}
+                      >
+                        {setting.skip_giving ? '✓ No da regalo' : 'No da regalo'}
+                      </button>
+                      <button
+                        type="button"
+                        className={`draw-toggle ${setting.skip_receiving ? 'active' : ''}`}
+                        onClick={() => toggleDrawSetting(member, 'skip_receiving')}
+                        disabled={isSaving}
+                        aria-pressed={setting.skip_receiving}
+                      >
+                        {setting.skip_receiving ? '✓ No recibe regalo' : 'No recibe regalo'}
+                      </button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+
+            <div className="draw-setup-note">
+              Ejemplo: si Fede ya le compró a Gino, marcá “No da regalo” para Fede y “No recibe regalo” para Gino. Fede seguirá pudiendo recibir y Gino seguirá pudiendo regalar en el nuevo sorteo.
+            </div>
+
+            <button className="button primary large full" onClick={() => setShowDrawSetupModal(false)} style={{ marginTop: 20 }}>
+              Guardar y volver al sorteo
+            </button>
           </div>
         </div>
       )}
